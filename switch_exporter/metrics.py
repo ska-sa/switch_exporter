@@ -5,4 +5,4 @@ COUNTERS = {
 
 
 def name_to_metric(name: str) -> str:
-    return name.replace(' ', '_') + '_total'
+    return 'switch_port_' + name.replace(' ', '_') + '_total'
