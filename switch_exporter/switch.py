@@ -25,6 +25,10 @@ class LLDPRemoteInfo:
     port = attr.ib(type=str, default='')
 
 
+def _if_advertised(descr: str) -> str:
+    return '' if descr == 'Not Advertised' else descr
+
+
 class Switch(Item):
     """Collect statistics about a single switch.
 
@@ -99,11 +103,11 @@ class Switch(Item):
                 continue
             match = _REMOTE_PORT_RE.match(line)
             if match:
-                info.port = match.group(1)
+                info.port = _if_advertised(match.group(1))
                 continue
             match = _REMOTE_NAME_RE.match(line)
             if match:
-                info.name = match.group(1)
+                info.name = _if_advertised(match.group(1))
                 continue
         self.lldp_info = new_lldp
         self.lldp_time = time.time()
