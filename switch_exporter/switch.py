@@ -15,18 +15,16 @@ from . import metrics
 logger = logging.getLogger(__name__)
 _PORT_RE = re.compile(r'^Eth(.*)$')
 _COUNTER_RE = re.compile(r'^  (\d+) +(.*)$')
-_REMOTE_PORT_RE = re.compile(r'^Remote port description: (.*)$')
-_REMOTE_NAME_RE = re.compile(r'^Remote system name: (.*)$')
+_REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id: ([^;]+) ; port id subtype:')
+_REMOTE_PORT_DESCRIPTION_RE = re.compile(r'^Remote port description: (?!Not Advertised)(.*)$')
+_REMOTE_NAME_RE = re.compile(r'^Remote system name: (?!Not Advertised)(.*)$')
 
 
 @attr.s(slots=True)
 class LLDPRemoteInfo:
     name = attr.ib(type=str, default='')
-    port = attr.ib(type=str, default='')
-
-
-def _if_advertised(descr: str) -> str:
-    return '' if descr == 'Not Advertised' else descr
+    port_id = attr.ib(type=str, default='')
+    port_description = attr.ib(type=str, default='')
 
 
 class Switch(Item):
@@ -90,7 +88,7 @@ class Switch(Item):
         logger.info('Updating LLDP information for %s', self.hostname)
         result = await self._run_command(
             'show lldp interfaces ethernet remote '
-            '| include "^Eth|^Remote port description:|^Remote system name:"')
+            '| include "^Eth|^Remote port description:|^Remote system name:|^Remote port-id:"')
         port = None
         info = LLDPRemoteInfo()
         new_lldp = {}
@@ -101,13 +99,17 @@ class Switch(Item):
                 port = match.group(1)
                 new_lldp[port] = info = LLDPRemoteInfo()
                 continue
-            match = _REMOTE_PORT_RE.match(line)
+            match = _REMOTE_PORT_ID_RE.match(line)
             if match:
-                info.port = _if_advertised(match.group(1))
+                info.port_id = match.group(1)
+                continue
+            match = _REMOTE_PORT_DESCRIPTION_RE.match(line)
+            if match:
+                info.port_description = match.group(1)
                 continue
             match = _REMOTE_NAME_RE.match(line)
             if match:
-                info.name = _if_advertised(match.group(1))
+                info.name = match.group(1)
                 continue
         self.lldp_info = new_lldp
         self.lldp_time = time.time()
@@ -128,7 +130,8 @@ class Switch(Item):
             metric = metrics.name_to_metric(name)
             counters[name] = prometheus_client.Counter(
                 metric, 'total number of ' + name,
-                labelnames=('port', 'direction', 'remote_name', 'remote_port'),
+                labelnames=('port', 'direction', 'remote_name',
+                            'remote_port_id', 'remote_port_description'),
                 registry=registry)
         info = dummy_info = LLDPRemoteInfo()
         for line in result.splitlines():
@@ -146,7 +149,8 @@ class Switch(Item):
                     # there is no rounding in IEEE double precision.
                     count = int(match.group(1)) & (2**53 - 1)
                     name = match.group(2)
-                    labels = (port, direction, info.name, info.port)
+                    labels = (port, direction, info.name,
+                              info.port_id, info.port_description)
                     counters[name].labels(*labels).inc(count)
         return registry
 
