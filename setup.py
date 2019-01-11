@@ -15,7 +15,8 @@ setup(
         'async_timeout',
         'asyncssh',
         'attrs',
-        'prometheus_client'
+        'prometheus_client<0.4.0',
+        'katsdpservices'
     ],
     entry_points={
         'console_scripts': ['switch-exporter = switch_exporter.server:main']

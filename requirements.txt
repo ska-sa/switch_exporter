@@ -10,7 +10,7 @@ idna-ssl                  # via aiohttp
 idna                      # via cryptography, idna-ssl, yarl
 multidict                 # via aiohttp, yarl
 netifaces
-prometheus-client==0.4.2
+prometheus-client==0.3.1
 pycparser                 # via cffi
 pygelf
 six                       # via cryptography
