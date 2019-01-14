@@ -78,15 +78,14 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--bind', help='Web server local address')
     parser.add_argument(
-        '--log-level', help='Log level [INFO]')
+        '--log-level', default='INFO', help='Log level [%(default)s]')
     return parser.parse_args()
 
 
 def main() -> None:
     args = get_arguments()
     katsdpservices.setup_logging()
-    if args.log_level:
-        logging.root.setLevel(args.log_level.upper())
+    logging.root.setLevel(args.log_level.upper())
     app = make_app(args)
     web.run_app(app, host=args.bind, port=args.port)
 
