@@ -16,4 +16,4 @@ pygelf
 six                       # via cryptography
 yarl                      # via aiohttp
 
-git+ssh://git@github.com/ska-sa/katsdpservices
+katsdpservices @ git+https://git@github.com/ska-sa/katsdpservices
