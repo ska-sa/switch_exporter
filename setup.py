@@ -4,8 +4,8 @@ from setuptools import setup, find_packages
 
 setup(
     name='switch_exporter',
-    author='Bruce Merry',
-    author_email='bmerry@ska.ac.za',
+    author='MeerKAT SDP team',
+    author_email='sdpdev+switch_exporter@ska.ac.za',
     description='Prometheus exporter for Mellanox switch counters',
     packages=find_packages(),
     setup_requires=['katversion'],

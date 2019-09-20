@@ -1,4 +1,6 @@
-FROM sdp-docker-registry.kat.ac.za:5000/docker-base-build as build
+ARG KATSDPDOCKERBASE_REGISTRY=quay.io/ska-sa
+
+FROM $KATSDPDOCKERBASE_REGISTRY/docker-base-build as build
 
 # Enable Python 3 venv
 ENV PATH="$PATH_PYTHON3" VIRTUAL_ENV="$VIRTUAL_ENV_PYTHON3"
@@ -15,7 +17,8 @@ RUN cd /tmp/install/switch_exporter && \
 
 #######################################################################
 
-FROM sdp-docker-registry.kat.ac.za:5000/docker-base-runtime
+FROM $KATSDPDOCKERBASE_REGISTRY/docker-base-runtime
+LABEL maintainer=sdpdev+switch_exporter@ska.ac.za
 
 COPY --chown=kat:kat --from=build /home/kat/ve3 /home/kat/ve3
 ENV PATH="$PATH_PYTHON3" VIRTUAL_ENV="$VIRTUAL_ENV_PYTHON3"
