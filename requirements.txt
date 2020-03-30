@@ -3,7 +3,7 @@ asn1crypto==0.24.0        # via cryptography
 async-timeout
 asyncssh==1.14.0
 attrs==18.2.0
-cffi                      # via cryptography
+cffi==1.14.0              # via cryptography
 chardet                   # via aiohttp
 cryptography==2.4.1       # via asyncssh
 idna-ssl                  # via aiohttp
