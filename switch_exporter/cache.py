@@ -48,7 +48,7 @@ class Item(Generic[_T]):
         self._cancel_timeout()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self._users -= 1
         if self._users == 0:
             if self._destroying:
@@ -56,7 +56,6 @@ class Item(Generic[_T]):
             else:
                 self._timeout_handle = asyncio.get_event_loop().call_later(
                     self._cache.timeout, self.destroy)
-        return False    # Allow exceptions to propagate
 
     def _destroy(self) -> None:
         assert self._destroying and self._users == 0
