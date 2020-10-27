@@ -5,7 +5,7 @@ asyncssh==1.14.0
 attrs==18.2.0
 cffi==1.14.0              # via cryptography
 chardet                   # via aiohttp
-cryptography==2.4.1       # via asyncssh
+cryptography==3.2       # via asyncssh
 idna-ssl                  # via aiohttp
 idna                      # via cryptography, idna-ssl, yarl
 multidict                 # via aiohttp, yarl
