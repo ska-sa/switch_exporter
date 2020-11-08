@@ -13,11 +13,12 @@ from . import metrics
 
 
 logger = logging.getLogger(__name__)
-_PORT_RE = re.compile(r'^Eth(.*)$')
+_PORT_RE = re.compile(r'^Eth([^:]*):?$')
 _COUNTER_RE = re.compile(r'^  (\d+) +(.*)$')
-_REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id: ([^;]+) ; port id subtype:')
-_REMOTE_PORT_DESCRIPTION_RE = re.compile(r'^Remote port description: (?!Not Advertised)(.*)$')
-_REMOTE_NAME_RE = re.compile(r'^Remote system name: (?!Not Advertised)(.*)$')
+_REMOTE_PORT_ID_RE = re.compile(r'^ *Remote port-id *: ([^;]+)(?:$| ; port id subtype:)')
+_REMOTE_PORT_DESCRIPTION_RE = \
+    re.compile(r'^ *Remote port description *: (?!Not Advertised)(?!N\\A)(.*)$')
+_REMOTE_NAME_RE = re.compile(r'^ *Remote system name *: (?!Not Advertised)(.*)$')
 
 
 @attr.s(slots=True)
@@ -88,7 +89,8 @@ class Switch(Item):
         logger.info('Updating LLDP information for %s', self.hostname)
         result = await self._run_command(
             'show lldp interfaces ethernet remote '
-            '| include "^Eth|^Remote port description:|^Remote system name:|^Remote port-id:"')
+            '| include "^Eth|^ *Remote port description *:'
+            '|^ *Remote system name *:|^ *Remote port-id *:"')
         port = None
         info = LLDPRemoteInfo()
         new_lldp = {}
@@ -136,12 +138,13 @@ class Switch(Item):
         info = dummy_info = LLDPRemoteInfo()
         for line in result.splitlines():
             line = line.rstrip()
-            if line == 'Rx':
+            # MLNX-OS omits the colon, Onyx includes it
+            if line in {'Rx', 'Rx:'}:
                 cur_port += 1
                 port = self.ports[cur_port]
                 info = self.lldp_info.get(port, dummy_info)
-            if line in ('Rx', 'Tx'):
-                direction = line.lower()
+            if line in {'Rx', 'Tx', 'Rx:', 'Tx:'}:
+                direction = line[:2].lower()
             else:
                 match = _COUNTER_RE.match(line)
                 if match and match.group(2) in metrics.COUNTERS:
