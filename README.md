@@ -2,7 +2,9 @@
 
 This is a Prometheus exporter that collects counters from a switch and makes
 them available for Prometheus to scrape. It has been written specifically for
-Mellanox switches running MLNX-OS, but may work on others.
+Mellanox switches running MLNX-OS and Onyx; it probably will not work on other
+switches as it uses regular expressions that are sensitive to the exact output
+formats.
 
 The metric endpoint is `http://HOST:PORT/metrics?target=TARGET`, where TARGET
 is the address of the switch. The initial scrape will be slower as it
