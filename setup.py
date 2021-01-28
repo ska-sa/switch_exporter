@@ -9,7 +9,7 @@ setup(
     description='Prometheus exporter for Mellanox switch counters',
     packages=find_packages(),
     setup_requires=['katversion'],
-    python_requires='>=3.5',
+    python_requires='>=3.6',
     install_requires=[
         'aiohttp',
         'async_timeout',
