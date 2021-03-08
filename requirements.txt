@@ -1,20 +1,9 @@
+-c https://raw.githubusercontent.com/ska-sa/katsdpdockerbase/master/docker-base-build/base-requirements.txt
+
 aiohttp
-asn1crypto==0.24.0        # via cryptography
 async-timeout
 asyncssh==1.14.0
-attrs==18.2.0
-cffi==1.14.0              # via cryptography
-chardet                   # via aiohttp
-cryptography==3.3.2       # via asyncssh
-idna-ssl                  # via aiohttp
-idna                      # via cryptography, idna-ssl, yarl
-multidict                 # via aiohttp, yarl
-netifaces
+attrs
 prometheus-client==0.3.1
-pycparser==2.20           # via cffi
-pygelf
-six                       # via cryptography
-typing-extensions         # via aiohttp
-yarl                      # via aiohttp
 
 katsdpservices @ git+https://github.com/ska-sa/katsdpservices
