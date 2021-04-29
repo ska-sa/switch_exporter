@@ -14,11 +14,11 @@ from . import metrics
 
 logger = logging.getLogger(__name__)
 _PORT_RE = re.compile(r'^Eth([^:]*):?$')
-_COUNTER_RE = re.compile(r'^  (\d+) +(.*)$')
-_REMOTE_PORT_ID_RE = re.compile(r'^ *Remote port-id *: ([^;]+)(?:$| ; port id subtype:)')
+_COUNTER_RE = re.compile(r'^(\d+) +(.*)$')
+_REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subtype:)')
 _REMOTE_PORT_DESCRIPTION_RE = \
-    re.compile(r'^ *Remote port description *: (?!Not Advertised)(?!N\\A)(.*)$')
-_REMOTE_NAME_RE = re.compile(r'^ *Remote system name *: (?!Not Advertised)(.*)$')
+    re.compile(r'^Remote port description *: (?!Not Advertised)(?!N\\A)(.*)$')
+_REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
 
 
 @attr.s(slots=True)
@@ -53,7 +53,9 @@ class Switch(Item):
 
     async def _run_command(self, command: str) -> str:
         assert self.conn is not None
+        logger.debug('Sending command %s', command)
         result = await self.conn.run(command=None, input=command)
+        logger.debug('Received response %s', result)
         return result.stdout
 
     async def _connect(self) -> None:
@@ -95,7 +97,7 @@ class Switch(Item):
         info = LLDPRemoteInfo()
         new_lldp = {}
         for line in result.splitlines():
-            line = line.rstrip()
+            line = line.strip()
             match = _PORT_RE.match(line)
             if match:
                 port = match.group(1)
@@ -137,7 +139,7 @@ class Switch(Item):
                 registry=registry)
         info = dummy_info = LLDPRemoteInfo()
         for line in result.splitlines():
-            line = line.rstrip()
+            line = line.strip()
             # MLNX-OS omits the colon, Onyx includes it
             if line in {'Rx', 'Rx:'}:
                 cur_port += 1
