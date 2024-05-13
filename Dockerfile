@@ -13,12 +13,12 @@ RUN install_pinned.py -r /tmp/install/requirements.txt
 COPY --chown=kat:kat . /tmp/install/switch_exporter
 
 RUN cd /tmp/install/switch_exporter && \
-    ./setup.py clean && pip install --no-deps . && pip check
+    python setup.py clean && pip install --no-deps . && pip check
 
 #######################################################################
 
 FROM $KATSDPDOCKERBASE_REGISTRY/docker-base-runtime
-LABEL maintainer=sdpdev+switch_exporter@ska.ac.za
+LABEL maintainer=sdpdev+switch_exporter@sarao.ac.za
 
 COPY --chown=kat:kat --from=build /home/kat/ve3 /home/kat/ve3
 ENV PATH="$PATH_PYTHON3" VIRTUAL_ENV="$VIRTUAL_ENV_PYTHON3"
