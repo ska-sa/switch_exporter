@@ -1,13 +1,12 @@
 -c https://raw.githubusercontent.com/ska-sa/katsdpdockerbase/master/docker-base-build/base-requirements.txt
 
 aiohttp
-asn1crypto==0.24.0        # via cryptography
 async-timeout
-asyncssh==1.14.0
+asyncssh==2.14.2
 attrs
-cffi==1.14.0              # via cryptography
-cryptography==3.3.2       # via asyncssh
+cffi==1.16.0              # via cryptography
+cryptography==42.0.7      # via asyncssh
 prometheus-client==0.3.1
-pycparser==2.20           # via cffi
+pycparser==2.22           # via cffi
 
 katsdpservices @ git+https://github.com/ska-sa/katsdpservices
