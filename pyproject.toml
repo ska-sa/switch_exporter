@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "switch_exporter"
 dynamic = ["version"]
-authors = [{name = "MeerKAT SDP team", email = "sdpdev+switch_exporter@ska.ac.za"}]
+authors = [{name = "MeerKAT SDP team", email = "sdpdev+switch_exporter@sarao.ac.za"}]
 description = "Prometheus exporter for Mellanox switch counters"
 readme = "README.md"
 requires-python = ">=3.6"
