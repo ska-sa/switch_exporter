@@ -1,2 +1,30 @@
 [build-system]
-requires = ["setuptools", "wheel", "katversion"]
+requires = ["setuptools", "katversion"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "switch_exporter"
+dynamic = ["version"]
+authors = [{name = "MeerKAT SDP team", email = "sdpdev+switch_exporter@sarao.ac.za"}]
+description = "Prometheus exporter for Mellanox switch counters"
+readme = "README.md"
+requires-python = ">=3.6"
+dependencies = [
+    "aiohttp",
+    "async_timeout",
+    "asyncssh",
+    "attrs",
+    "prometheus_client",
+    "katsdpservices",
+]
+
+[project.scripts]
+switch-exporter = "switch_exporter.server:main"
+
+[project.urls]
+Homepage = "https://github.com/ska-sa/switch_exporter"
+
+[tool.mypy]
+python_version = "3.6"
+ignore_missing_imports = true
+files = "src/switch_exporter"

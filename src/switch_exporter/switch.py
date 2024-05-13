@@ -13,7 +13,7 @@ from . import metrics
 
 
 logger = logging.getLogger(__name__)
-_PORT_RE = re.compile(r'^Eth([^:]*):?$')
+_PORT_RE = re.compile(r'^Eth([^ :]*)(?: \(.*\))?:?$')
 _COUNTER_RE = re.compile(r'^(\d+) +(.*)$')
 _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subtype:)')
 _REMOTE_PORT_DESCRIPTION_RE = \
