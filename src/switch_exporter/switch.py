@@ -43,6 +43,7 @@ class Switch(Item):
         self.hostname = hostname
         self.username = username
         self.password = password
+        self.keyfile = []
         self.lldp_info = {}           # type: Dict[str, LLDPRemoteInfo]
         self.lldp_time = 0.0          # time when LLDP info was last updated
         self.lldp_timeout = lldp_timeout
@@ -68,7 +69,8 @@ class Switch(Item):
     async def _connect_unlocked(self) -> None:
         self.conn = await asyncssh.connect(
             self.hostname, known_hosts=None,
-            username=self.username, password=self.password)
+            username=self.username, password=self.password,
+            client_keys=self.keyfile, signature_algs=['rsa-sha2-512'])
         result = await self._run_command('show interfaces ethernet status')
         self.ports = []
         for line in result.splitlines():

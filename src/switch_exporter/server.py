@@ -65,6 +65,9 @@ def get_arguments() -> argparse.Namespace:
         '--password', default='monitor',
         help='Password on switches')
     parser.add_argument(
+        '--keyfile',
+        help='SSH key for switches')
+    parser.add_argument(
         '--connection-timeout', type=float, default=120.0, metavar='SECONDS',
         help='Time to cache open SSH connections [%(default)s]')
     parser.add_argument(
