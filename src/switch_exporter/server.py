@@ -49,7 +49,8 @@ def make_app(args: argparse.Namespace) -> web.Application:
         Switch,
         lldp_timeout=args.lldp_timeout,
         username=args.username,
-        password=args.password)
+        password=args.password,
+        keyfile=args.keyfile)
     app['cache'] = Cache(factory, args.connection_timeout)
     app['scrape_timeout'] = args.scrape_timeout
     app.router.add_get('/metrics', get_metrics)
