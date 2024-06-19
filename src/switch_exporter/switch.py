@@ -70,7 +70,7 @@ class Switch(Item):
         self.conn = await asyncssh.connect(
             self.hostname, known_hosts=None,
             username=self.username, password=self.password,
-            client_keys=self.keyfile, signature_algs=['rsa-sha2-512'])
+            client_keys=self.keyfile)
         result = await self._run_command('show interfaces ethernet status')
         self.ports = []
         for line in result.splitlines():
