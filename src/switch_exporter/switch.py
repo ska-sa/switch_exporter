@@ -35,14 +35,15 @@ class Switch(Item):
     does not automatically reconnect: if you get a connection error, throw
     it away (via :meth:`destroy`) and create a new one.
     """
-    def __init__(self, cache: Cache, hostname: str,
-                 username: str, password: str, lldp_timeout: float) -> None:
+    def __init__(self, cache: Cache, hostname: str, username: str,
+                 password: str, keyfile: str, lldp_timeout: float) -> None:
         super().__init__(cache, hostname)
         self.conn = None
         self.ports = []               # type: List[str]
         self.hostname = hostname
         self.username = username
         self.password = password
+        self.keyfile = keyfile
         self.lldp_info = {}           # type: Dict[str, LLDPRemoteInfo]
         self.lldp_time = 0.0          # time when LLDP info was last updated
         self.lldp_timeout = lldp_timeout
@@ -68,7 +69,8 @@ class Switch(Item):
     async def _connect_unlocked(self) -> None:
         self.conn = await asyncssh.connect(
             self.hostname, known_hosts=None,
-            username=self.username, password=self.password)
+            username=self.username, password=self.password,
+            client_keys=self.keyfile)
         result = await self._run_command('show interfaces ethernet status')
         self.ports = []
         for line in result.splitlines():

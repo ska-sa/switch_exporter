@@ -49,7 +49,8 @@ def make_app(args: argparse.Namespace) -> web.Application:
         Switch,
         lldp_timeout=args.lldp_timeout,
         username=args.username,
-        password=args.password)
+        password=args.password,
+        keyfile=args.keyfile)
     app['cache'] = Cache(factory, args.connection_timeout)
     app['scrape_timeout'] = args.scrape_timeout
     app.router.add_get('/metrics', get_metrics)
@@ -64,6 +65,9 @@ def get_arguments() -> argparse.Namespace:
     parser.add_argument(
         '--password', default='monitor',
         help='Password on switches')
+    parser.add_argument(
+        '--keyfile', default=(),
+        help='SSH client key for switches')
     parser.add_argument(
         '--connection-timeout', type=float, default=120.0, metavar='SECONDS',
         help='Time to cache open SSH connections [%(default)s]')
