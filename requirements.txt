@@ -5,7 +5,7 @@ async-timeout
 asyncssh==2.17.0
 attrs
 cffi==1.17.1              # via cryptography
-cryptography==43.0.1      # via asyncssh
+cryptography==44.0.1      # via asyncssh
 prometheus-client==0.3.1
 pycparser==2.22           # via cffi
 
