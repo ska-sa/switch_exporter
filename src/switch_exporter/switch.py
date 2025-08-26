@@ -120,17 +120,13 @@ class Switch(Item):
         self.lldp_info = new_lldp
         self.lldp_time = time.time()
 
-    async def scrape(self) -> prometheus_client.CollectorRegistry:
-        """Obtain the metrics from the switch"""
-        await self._connect()
-        await self._update_lldp()
+    async def _scrape_counters(self, registry: prometheus_client.CollectorRegistry) -> None:
         cmd = ['show interfaces ethernet {} counters'.format(port)
                for port in self.ports]
         result = await self._run_command('\n'.join(cmd))
         cur_port = -1
         direction = None
         port = None
-        registry = prometheus_client.CollectorRegistry()
         counters = {}
         for name in metrics.COUNTERS:
             metric = metrics.name_to_metric(name)
@@ -159,6 +155,38 @@ class Switch(Item):
                     labels = (port, direction, info.name,
                               info.port_id, info.port_description)
                     counters[name].labels(*labels).inc(count)
+
+    async def _scrape_state(self, registry: prometheus_client.CollectorRegistry) -> None:
+        result = await self._run_command('show interfaces ethernet description')
+        dummy_info = LLDPRemoteInfo()
+        labelnames = ('port', 'remote_name', 'remote_port_id', 'remote_port_description')
+        enabled = prometheus_client.Gauge(
+            'switch_port_enabled', 'whether port is administratively enabled',
+            labelnames=labelnames,
+            registry=registry,
+        )
+        up = prometheus_client.Gauge(
+            'switch_port_up', 'whether port is currently up',
+            labelnames=labelnames,
+            registry=registry,
+        )
+        for line in result.splitlines():
+            line = line.strip()
+            if line.startswith('Eth'):
+                fields = line.split()
+                port = fields[0][3:]
+                info = self.lldp_info.get(port, dummy_info)
+                labels = (port, info.name, info.port_id, info.port_description)
+                enabled.labels(*labels).set(int(fields[1] == 'Enabled'))
+                up.labels(*labels).set(int(fields[2] == 'Up'))
+
+    async def scrape(self) -> prometheus_client.CollectorRegistry:
+        """Obtain the metrics from the switch"""
+        await self._connect()
+        await self._update_lldp()
+        registry = prometheus_client.CollectorRegistry()
+        await self._scrape_counters(registry)
+        await self._scrape_state(registry)
         return registry
 
     async def close(self) -> None:
