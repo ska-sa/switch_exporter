@@ -180,6 +180,34 @@ class Switch(Item):
                 enabled.labels(*labels).set(int(fields[1] == 'Enabled'))
                 up.labels(*labels).set(int(fields[2] == 'Up'))
 
+    async def _scrape_operational_changes(self, registry: prometheus_client.CollectorRegistry) -> None:
+        cmd = 'show interfaces ethernet | include "^\s+Last change"'
+        result = await self._run_command(cmd)
+        cur_port = -1
+        counter = prometheus_client.Counter(
+            "switch_port_operational_changes_total", 'total number of operational changes',
+            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description'),
+            registry=registry)
+        info = dummy_info = LLDPRemoteInfo()
+        for line in result.splitlines():
+            cur_port += 1
+            port = self.ports[cur_port]
+            line = line.strip()
+            port = self.ports[cur_port]
+            info = self.lldp_info.get(port, dummy_info)
+            regex = re.compile(r'^Last change in operational status: (.*) \((\d+) oper change\)$')
+            match = regex.match(line)
+            labels = (port, info.name, info.port_id, info.port_description)
+            if match:
+                last_change_count = int(match.group(2))
+                counter.labels(*labels).inc(last_change_count)
+            else:
+                regex = re.compile(r'^Last change in operational status: Never$')
+                if regex.match(line):
+                    counter.labels(*labels).inc(0)
+                else:
+                    logger.warning('Unexpected line in show interfaces ethernet: %s', line)
+
     async def scrape(self) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         await self._connect()
@@ -187,6 +215,7 @@ class Switch(Item):
         registry = prometheus_client.CollectorRegistry()
         await self._scrape_counters(registry)
         await self._scrape_state(registry)
+        await self._scrape_operational_changes(registry)
         return registry
 
     async def close(self) -> None:

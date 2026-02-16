@@ -4,7 +4,7 @@ aiohttp
 async-timeout
 asyncssh==2.17.0
 attrs
-cffi==1.17.1              # via cryptography
+cffi==2.0.0              # via cryptography
 cryptography==46.0.5      # via asyncssh
 prometheus-client==0.3.1
 pycparser==2.22           # via cffi
