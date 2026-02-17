@@ -19,6 +19,8 @@ _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subt
 _REMOTE_PORT_DESCRIPTION_RE = \
     re.compile(r'^Remote port description *: (?!Not Advertised)(?!N\\A)(.*)$')
 _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
+_OPERATIONAL_CHANGES_RE = re.compile(r'Last change in operational status: (.*) \((\d+) oper change\)')
+_OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Last change in operational status: Never')
 
 
 @attr.s(slots=True)
@@ -184,27 +186,23 @@ class Switch(Item):
         cmd = 'show interfaces ethernet | include "^\s+Last change"'
         result = await self._run_command(cmd)
         cur_port = -1
-        counter = prometheus_client.Counter(
-            "switch_port_operational_changes_total", 'total number of operational changes',
+        gauge = prometheus_client.Gauge(
+            'switch_port_operational_changes_total', 'total number of operational changes',
             labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description'),
             registry=registry)
-        info = dummy_info = LLDPRemoteInfo()
         for line in result.splitlines():
             cur_port += 1
             port = self.ports[cur_port]
             line = line.strip()
-            port = self.ports[cur_port]
-            info = self.lldp_info.get(port, dummy_info)
-            regex = re.compile(r'^Last change in operational status: (.*) \((\d+) oper change\)$')
-            match = regex.match(line)
+            info = self.lldp_info.get(port, LLDPRemoteInfo())
             labels = (port, info.name, info.port_id, info.port_description)
+            match = _OPERATIONAL_CHANGES_RE.fullmatch(line)
             if match:
-                last_change_count = int(match.group(2))
-                counter.labels(*labels).inc(last_change_count)
+                last_change_total = int(match.group(2))
+                gauge.labels(*labels).set(last_change_total)
             else:
-                regex = re.compile(r'^Last change in operational status: Never$')
-                if regex.match(line):
-                    counter.labels(*labels).inc(0)
+                if _OPERATIONAL_CHANGES_NEVER_RE.fullmatch(line):
+                    gauge.labels(*labels).set(0)
                 else:
                     logger.warning('Unexpected line in show interfaces ethernet: %s', line)
 
