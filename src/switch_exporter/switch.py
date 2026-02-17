@@ -19,7 +19,8 @@ _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subt
 _REMOTE_PORT_DESCRIPTION_RE = \
     re.compile(r'^Remote port description *: (?!Not Advertised)(?!N\\A)(.*)$')
 _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
-_OPERATIONAL_CHANGES_RE = re.compile(r'Last change in operational status: (.*) \((\d+) oper change\)')
+_OPERATIONAL_CHANGES_RE = \
+    re.compile(r'Last change in operational status: (.*) \((\d+) oper change\)')
 _OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Last change in operational status: Never')
 
 
@@ -182,8 +183,11 @@ class Switch(Item):
                 enabled.labels(*labels).set(int(fields[1] == 'Enabled'))
                 up.labels(*labels).set(int(fields[2] == 'Up'))
 
-    async def _scrape_operational_changes(self, registry: prometheus_client.CollectorRegistry) -> None:
-        cmd = 'show interfaces ethernet | include "^\s+Last change"'
+    async def _scrape_operational_changes(
+        self,
+        registry: prometheus_client.CollectorRegistry
+    ) -> None:
+        cmd = 'show interfaces ethernet | include "^\\s+Last change"'
         result = await self._run_command(cmd)
         cur_port = -1
         gauge = prometheus_client.Gauge(
