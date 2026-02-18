@@ -19,6 +19,9 @@ _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subt
 _REMOTE_PORT_DESCRIPTION_RE = \
     re.compile(r'^Remote port description *: (?!Not Advertised)(?!N\\A)(.*)$')
 _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
+_OPERATIONAL_CHANGES_RE = \
+    re.compile(r'Last change in operational status: (.*) \((\d+) oper change\)')
+_OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Last change in operational status: Never')
 
 
 @attr.s(slots=True)
@@ -180,6 +183,33 @@ class Switch(Item):
                 enabled.labels(*labels).set(int(fields[1] == 'Enabled'))
                 up.labels(*labels).set(int(fields[2] == 'Up'))
 
+    async def _scrape_operational_changes(
+        self,
+        registry: prometheus_client.CollectorRegistry
+    ) -> None:
+        cmd = 'show interfaces ethernet | include "^\\s+Last change"'
+        result = await self._run_command(cmd)
+        cur_port = -1
+        counter = prometheus_client.Counter(
+            'switch_port_operational_changes_total', 'total number of operational changes',
+            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description'),
+            registry=registry)
+        for line in result.splitlines():
+            cur_port += 1
+            port = self.ports[cur_port]
+            line = line.strip()
+            info = self.lldp_info.get(port, LLDPRemoteInfo())
+            labels = (port, info.name, info.port_id, info.port_description)
+            match = _OPERATIONAL_CHANGES_RE.fullmatch(line)
+            if match:
+                last_change_total = int(match.group(2))
+                counter.labels(*labels).inc(last_change_total)
+            else:
+                if _OPERATIONAL_CHANGES_NEVER_RE.fullmatch(line):
+                    counter.labels(*labels).inc(0)
+                else:
+                    logger.warning('Unexpected line in show interfaces ethernet: %s', line)
+
     async def scrape(self) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         await self._connect()
@@ -187,6 +217,7 @@ class Switch(Item):
         registry = prometheus_client.CollectorRegistry()
         await self._scrape_counters(registry)
         await self._scrape_state(registry)
+        await self._scrape_operational_changes(registry)
         return registry
 
     async def close(self) -> None:
