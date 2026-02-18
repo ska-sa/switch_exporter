@@ -190,7 +190,7 @@ class Switch(Item):
         cmd = 'show interfaces ethernet | include "^\\s+Last change"'
         result = await self._run_command(cmd)
         cur_port = -1
-        gauge = prometheus_client.Gauge(
+        counter = prometheus_client.Counter(
             'switch_port_operational_changes_total', 'total number of operational changes',
             labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description'),
             registry=registry)
@@ -203,10 +203,10 @@ class Switch(Item):
             match = _OPERATIONAL_CHANGES_RE.fullmatch(line)
             if match:
                 last_change_total = int(match.group(2))
-                gauge.labels(*labels).set(last_change_total)
+                counter.labels(*labels).inc(last_change_total)
             else:
                 if _OPERATIONAL_CHANGES_NEVER_RE.fullmatch(line):
-                    gauge.labels(*labels).set(0)
+                    counter.labels(*labels).inc(0)
                 else:
                     logger.warning('Unexpected line in show interfaces ethernet: %s', line)
 
