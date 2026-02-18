@@ -22,6 +22,7 @@ _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
 _OPERATIONAL_CHANGES_RE = \
     re.compile(r'Last change in operational status: (.*) \((\d+) oper change\)')
 _OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Last change in operational status: Never')
+_DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
 
 
 @attr.s(slots=True)
@@ -209,15 +210,51 @@ class Switch(Item):
                     counter.labels(*labels).inc(0)
                 else:
                     logger.warning('Unexpected line in show interfaces ethernet: %s', line)
+    
+
+    _DIAGNOSTIC_CODE_TO_STATE = {
+        0: 'ok',
+        1024: 'unplugged',
+    }
+
+    async def _scrape_diagnostic_code(
+        self,
+        registry: prometheus_client.CollectorRegistry
+    ) -> None:
+        cmd = 'show interfaces ethernet link-diagnostics | include "^\s+Eth"'
+        result = await self._run_command(cmd)
+        cur_port = -1
+        metric = prometheus_client.Enum(
+            'switch_port_link_diagnostic_state', 'state of the link',
+            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description'),
+            registry=registry, states=['ok', 'unplugged', 'unknown'])
+        for line in result.splitlines():
+            cur_port += 1
+            port = self.ports[cur_port]
+            line = line.strip()
+            info = self.lldp_info.get(port, LLDPRemoteInfo())
+            labels = (port, info.name, info.port_id, info.port_description)
+            match = _DIAGNOSTIC_CODE_RE.match(line)
+            if match:
+                state = self._DIAGNOSTIC_CODE_TO_STATE.get(int(match.group(1)), 'unknown')
+                metric.labels(*labels).state(state)
+                if state == 'unknown':
+                    logger.warning('Unknown diagnostic code: %s', match.group(1))
+            else:
+                logger.warning('Unexpected line in show interfaces ethernet: %s', line)
 
     async def scrape(self) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         await self._connect()
         await self._update_lldp()
         registry = prometheus_client.CollectorRegistry()
-        await self._scrape_counters(registry)
-        await self._scrape_state(registry)
-        await self._scrape_operational_changes(registry)
+        
+        await asyncio.gather(
+            self._scrape_counters(registry),
+            self._scrape_state(registry),
+            self._scrape_operational_changes(registry),
+            self._scrape_diagnostic_code(registry)
+        )
         return registry
 
     async def close(self) -> None:
