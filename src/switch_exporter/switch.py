@@ -210,7 +210,6 @@ class Switch(Item):
                     counter.labels(*labels).inc(0)
                 else:
                     logger.warning('Unexpected line in show interfaces ethernet: %s', line)
-    
 
     _DIAGNOSTIC_CODE_TO_STATE = {
         0: 'ok',
@@ -221,7 +220,7 @@ class Switch(Item):
         self,
         registry: prometheus_client.CollectorRegistry
     ) -> None:
-        cmd = 'show interfaces ethernet link-diagnostics | include "^\s+Eth"'
+        cmd = 'show interfaces ethernet link-diagnostics | include "^\\s+Eth"'
         result = await self._run_command(cmd)
         cur_port = -1
         metric = prometheus_client.Enum(
@@ -248,7 +247,7 @@ class Switch(Item):
         await self._connect()
         await self._update_lldp()
         registry = prometheus_client.CollectorRegistry()
-        
+
         await asyncio.gather(
             self._scrape_counters(registry),
             self._scrape_state(registry),
