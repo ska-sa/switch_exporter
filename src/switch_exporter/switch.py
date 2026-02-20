@@ -2,7 +2,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import AsyncGenerator, Dict, List, Tuple       # noqa: F401
+from typing import Any, AsyncGenerator, Coroutine, Dict, List, Tuple       # noqa: F401
 
 import attr
 import asyncssh
@@ -25,17 +25,26 @@ _OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Last change in operational status: 
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
 _TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
-_TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(r'Hi Rx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm')
-_TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE = re.compile(r'Low Rx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm')
-_TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE = re.compile(r'Hi Tx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm')
-_TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(r'Low Tx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm')
+_TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(
+    r'\s*Hi Rx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm'
+)
+_TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE = re.compile(
+    r'\s*Low Rx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm'
+)
+_TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE = re.compile(
+    r'\s*Hi Tx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm'
+)
+_TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
+    r'\s*Low Tx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm'
+)
+_TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (.*) transceiver diagnostic data:')
+
 
 @attr.s(slots=True)
 class LLDPRemoteInfo:
     name = attr.ib(type=str, default='')
     port_id = attr.ib(type=str, default='')
     port_description = attr.ib(type=str, default='')
-
 
 
 class Switch(Item):
@@ -248,70 +257,102 @@ class Switch(Item):
             else:
                 logger.warning('Unexpected line in show interfaces ethernet: %s', line)
 
-    async def limit_concurrency(self, cmds: List[Tuple[str, str]], limit: int) -> AsyncGenerator[Tuple[str, str], None]:
-        semaphore = asyncio.Semaphore(limit)
-
-        async def wrapper(cmd: Tuple[str, str]) -> Tuple[str, str]:
-            async with semaphore:
-                return (await self._run_command(cmd[0]), cmd[1])
-
-        for result in await asyncio.gather(*map(wrapper, cmds)):
-            yield result
-
     async def _scrape_transciever_power(
         self,
         registry: prometheus_client.CollectorRegistry
     ) -> None:
-        cmds = [('enable\nshow interfaces ethernet {} transceiver diagnostics'.format(port), port) for port in self.ports]
-        results = self.limit_concurrency(cmds, 5)
-        cur_port = -1
+        result = await self._run_command('enable\nshow interfaces ethernet transceiver diagnostics')
         transceiver_power_guage = prometheus_client.Gauge(
-            f'switch_port_transceiver_power_dbm', 'power of the tx channel in decibel milliwatts',
-            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description', 'channel', 'direction'),
+            'switch_port_transceiver_power_dbm', 'power of the tx channel in decibel milliwatts',
+            labelnames=(
+                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
+                'channel', 'direction'
+            ),
             registry=registry
-        ) 
+        )
 
         transceiver_hi_power_alarm_threshold_guage = prometheus_client.Gauge(
-            f'switch_port_transceiver_hi_power_alarm_threshold_dbm', 'hi power alarm threshold in decibel milliwatts',
-            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description', 'direction'),
+            'switch_port_transceiver_hi_power_alarm_threshold_dbm',
+            'hi power alarm threshold in decibel milliwatts',
+            labelnames=(
+                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
+                'direction'
+            ),
             registry=registry
         )
 
         transceiver_low_power_alarm_threshold_guage = prometheus_client.Gauge(
-            f'switch_port_transceiver_low_power_alarm_threshold_dbm', 'low power alarm threshold in decibel milliwatts',
-            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description', 'direction'),
+            'switch_port_transceiver_low_power_alarm_threshold_dbm',
+            'low power alarm threshold in decibel milliwatts',
+            labelnames=(
+                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
+                'direction'
+            ),
             registry=registry
         )
 
-        async for (result, port) in results:
-            cur_port += 1
-            port = self.ports[cur_port]
+        results = _TRANSCEIVER_POWER_SECTION_RE.split(result)
+
+        # When using re.split() with capturing groups, the result alternates:
+        # [text_before_first_match, captured_group_1, text_after_match_1, captured_group_2,
+        # text_after_match_2, ...]
+        # Skip the first element (text before any match), then iterate in pairs: (port, section)
+        for i in range(1, len(results), 2):
+            if i + 1 >= len(results):
+                break
+            port = results[i]
+            section = results[i + 1]
+
             info = self.lldp_info.get(port, LLDPRemoteInfo())
             labels = (port, info.name, info.port_id, info.port_description)
 
-            matches = _TRANSCEIVER_POWER_RX_RE.finditer(result)
+            matches = _TRANSCEIVER_POWER_RX_RE.finditer(section)
             for match in matches:
-                transceiver_power_guage.labels(*labels, match.group(1), 'rx').set(float(match.group(2)))
-            
-            matches = _TRANSCEIVER_POWER_TX_RE.finditer(result)
+                child = transceiver_power_guage.labels(*labels, match.group(1), 'rx')
+                child.set(float(match.group(2)))
+
+            matches = _TRANSCEIVER_POWER_TX_RE.finditer(section)
             for match in matches:
-                transceiver_power_guage.labels(*labels, match.group(1), 'tx').set(float(match.group(2)))
+                child = transceiver_power_guage.labels(*labels, match.group(1), 'tx')
+                child.set(float(match.group(2)))
 
-            match = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.match(result)
-            if match:
-                transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'rx').set(float(match.group(1)))
+            matches = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.findall(section)
+            if matches:
+                child = transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'rx')
+                child.set(float(matches[0]))
 
-            match = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.match(result)
-            if match:
-                transceiver_low_power_alarm_threshold_guage.labels(*labels, 'rx').set(float(match.group(1)))
+            matches = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.findall(section)
+            if matches:
+                child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'rx')
+                child.set(float(matches[0]))
 
-            match = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.match(result)
-            if match:
-                transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'tx').set(float(match.group(1)))
+            matches = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.findall(section)
+            if matches:
+                child = transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'tx')
+                child.set(float(matches[0]))
 
-            match = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.match(result)
-            if match:
-                transceiver_low_power_alarm_threshold_guage.labels(*labels, 'tx').set(float(match.group(1)))
+            matches = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.findall(section)
+            if matches:
+                child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'tx')
+                child.set(float(matches[0]))
+
+    async def _limit_concurrency(
+        self,
+        coroutines: List[Coroutine[Any, Any, None]],
+        limit: int
+    ) -> AsyncGenerator[None, None]:
+        """Limit the total number of concurrent coroutines that uses the switch
+
+        The switch has a limit on the number of concurrent ssh sessions it can
+        handle before refusing new connections.
+        """
+        semaphore = asyncio.Semaphore(limit)
+
+        async def wrapper(coroutine) -> None:
+            async with semaphore:
+                return await coroutine
+
+        await asyncio.gather(*map(wrapper, coroutines))
 
     async def scrape(self) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
@@ -319,12 +360,15 @@ class Switch(Item):
         await self._update_lldp()
         registry = prometheus_client.CollectorRegistry()
 
-        await asyncio.gather(
-            self._scrape_counters(registry),
-            self._scrape_state(registry),
-            self._scrape_operational_changes(registry),
-            self._scrape_diagnostic_code(registry),
-            self._scrape_transciever_power(registry)
+        await self._limit_concurrency(
+            [
+                self._scrape_counters(registry),
+                self._scrape_state(registry),
+                self._scrape_operational_changes(registry),
+                self._scrape_diagnostic_code(registry),
+                self._scrape_transciever_power(registry)
+            ],
+            5
         )
         return registry
 
