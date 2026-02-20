@@ -2,7 +2,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import Dict, List       # noqa: F401
+from typing import AsyncGenerator, Dict, List, Tuple       # noqa: F401
 
 import attr
 import asyncssh
@@ -23,13 +23,19 @@ _OPERATIONAL_CHANGES_RE = \
     re.compile(r'Last change in operational status: (.*) \((\d+) oper change\)')
 _OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Last change in operational status: Never')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
-
+_TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
+_TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
+_TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(r'Hi Rx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm')
+_TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE = re.compile(r'Low Rx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm')
+_TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE = re.compile(r'Hi Tx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm')
+_TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(r'Low Tx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm')
 
 @attr.s(slots=True)
 class LLDPRemoteInfo:
     name = attr.ib(type=str, default='')
     port_id = attr.ib(type=str, default='')
     port_description = attr.ib(type=str, default='')
+
 
 
 class Switch(Item):
@@ -242,6 +248,71 @@ class Switch(Item):
             else:
                 logger.warning('Unexpected line in show interfaces ethernet: %s', line)
 
+    async def limit_concurrency(self, cmds: List[Tuple[str, str]], limit: int) -> AsyncGenerator[Tuple[str, str], None]:
+        semaphore = asyncio.Semaphore(limit)
+
+        async def wrapper(cmd: Tuple[str, str]) -> Tuple[str, str]:
+            async with semaphore:
+                return (await self._run_command(cmd[0]), cmd[1])
+
+        for result in await asyncio.gather(*map(wrapper, cmds)):
+            yield result
+
+    async def _scrape_transciever_power(
+        self,
+        registry: prometheus_client.CollectorRegistry
+    ) -> None:
+        cmds = [('enable\nshow interfaces ethernet {} transceiver diagnostics'.format(port), port) for port in self.ports]
+        results = self.limit_concurrency(cmds, 5)
+        cur_port = -1
+        transceiver_power_guage = prometheus_client.Gauge(
+            f'switch_port_transceiver_power_dbm', 'power of the tx channel in decibel milliwatts',
+            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description', 'channel', 'direction'),
+            registry=registry
+        ) 
+
+        transceiver_hi_power_alarm_threshold_guage = prometheus_client.Gauge(
+            f'switch_port_transceiver_hi_power_alarm_threshold_dbm', 'hi power alarm threshold in decibel milliwatts',
+            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description', 'direction'),
+            registry=registry
+        )
+
+        transceiver_low_power_alarm_threshold_guage = prometheus_client.Gauge(
+            f'switch_port_transceiver_low_power_alarm_threshold_dbm', 'low power alarm threshold in decibel milliwatts',
+            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description', 'direction'),
+            registry=registry
+        )
+
+        async for (result, port) in results:
+            cur_port += 1
+            port = self.ports[cur_port]
+            info = self.lldp_info.get(port, LLDPRemoteInfo())
+            labels = (port, info.name, info.port_id, info.port_description)
+
+            matches = _TRANSCEIVER_POWER_RX_RE.finditer(result)
+            for match in matches:
+                transceiver_power_guage.labels(*labels, match.group(1), 'rx').set(float(match.group(2)))
+            
+            matches = _TRANSCEIVER_POWER_TX_RE.finditer(result)
+            for match in matches:
+                transceiver_power_guage.labels(*labels, match.group(1), 'tx').set(float(match.group(2)))
+
+            match = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.match(result)
+            if match:
+                transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'rx').set(float(match.group(1)))
+
+            match = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.match(result)
+            if match:
+                transceiver_low_power_alarm_threshold_guage.labels(*labels, 'rx').set(float(match.group(1)))
+
+            match = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.match(result)
+            if match:
+                transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'tx').set(float(match.group(1)))
+
+            match = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.match(result)
+            if match:
+                transceiver_low_power_alarm_threshold_guage.labels(*labels, 'tx').set(float(match.group(1)))
+
     async def scrape(self) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         await self._connect()
@@ -252,7 +323,8 @@ class Switch(Item):
             self._scrape_counters(registry),
             self._scrape_state(registry),
             self._scrape_operational_changes(registry),
-            self._scrape_diagnostic_code(registry)
+            self._scrape_diagnostic_code(registry),
+            self._scrape_transciever_power(registry)
         )
         return registry
 

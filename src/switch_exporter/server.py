@@ -72,7 +72,7 @@ def get_arguments() -> argparse.Namespace:
         '--connection-timeout', type=float, default=120.0, metavar='SECONDS',
         help='Time to cache open SSH connections [%(default)s]')
     parser.add_argument(
-        '--scrape-timeout', type=float, default=8.0, metavar='SECONDS',
+        '--scrape-timeout', type=float, default=20.0, metavar='SECONDS',
         help='Timeout to obtain data from a switch [%(default)s]')
     parser.add_argument(
         '--lldp-timeout', type=float, default=300.0, metavar='SECONDS',
