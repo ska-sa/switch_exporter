@@ -34,6 +34,7 @@ async def get_metrics(request: web.Request) -> web.Response:
     except asyncio.TimeoutError:
         raise web.HTTPGatewayTimeout(
             text='Scrape timed out after {}s'.format(timeout))
+
     except Exception as exc:
         # Possibly a failed connection, so reset it
         switch.destroy()

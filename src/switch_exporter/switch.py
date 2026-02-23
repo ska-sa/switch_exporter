@@ -2,7 +2,9 @@ import logging
 import asyncio
 import re
 import time
-from typing import Any, AsyncGenerator, Coroutine, Dict, List, Tuple       # noqa: F401
+import traceback
+from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, List, Tuple
+from typing_extensions import override       # noqa: F401
 
 import attr
 import asyncssh
@@ -47,6 +49,37 @@ class LLDPRemoteInfo:
     port_description = attr.ib(type=str, default='')
 
 
+class ProcessPool:
+    def __init__(self, conn: asyncssh.SSHClientConnection) -> None:
+        self.conn = conn
+        self.process_stack = []       # type: List[asyncssh.SSHClientProcess[str]]
+        self.semaphore = asyncio.Semaphore(5)
+        self._lock = asyncio.Lock()   # Serialises refills 
+
+    async def run_process(self, command: str) -> str:
+        """Get a process from the pool."""
+        async with self.semaphore:
+            if len(self.process_stack) == 0:
+                await self.refill_stack()
+            process = self.process_stack.pop(0)
+            logger.debug('Running command %s', command)
+            stdout, stderr = await process.communicate(command)
+            if stderr:
+                logger.error('[%s] Error running command %s: %s', self.hostname, command, stderr)
+            return stdout
+
+    def close(self) -> None:
+        self.semaphore = asyncio.Semaphore(0)
+        for process in self.process_stack:
+            process.close()
+        self.process_stack = []
+
+    async def refill_stack(self) -> None:
+        async with self._lock:
+            for _ in range(max(0, 5 - len(self.process_stack))):
+                self.process_stack.append(await self.conn.create_process())
+
+
 class Switch(Item):
     """Collect statistics about a single switch.
 
@@ -59,6 +92,7 @@ class Switch(Item):
         super().__init__(cache, hostname)
         self.conn = None
         self.ports = []               # type: List[str]
+        self.process_pool = None      # type: ProcessPool
         self.hostname = hostname
         self.username = username
         self.password = password
@@ -72,11 +106,7 @@ class Switch(Item):
         return 'Switch({!r})'.format(self.hostname)
 
     async def _run_command(self, command: str) -> str:
-        assert self.conn is not None
-        logger.debug('Sending command %s', command)
-        result = await self.conn.run(command=None, input=command)
-        logger.debug('Received response %s', result)
-        return result.stdout
+        return await self.process_pool.run_process(command)
 
     async def _connect(self) -> None:
         """Establish the SSH connection"""
@@ -90,6 +120,8 @@ class Switch(Item):
             self.hostname, known_hosts=None,
             username=self.username, password=self.password,
             client_keys=self.keyfile)
+        self.process_pool = ProcessPool(self.conn)
+        await self.process_pool.refill_stack()
         result = await self._run_command('show interfaces ethernet status')
         self.ports = []
         for line in result.splitlines():
@@ -203,7 +235,7 @@ class Switch(Item):
         self,
         registry: prometheus_client.CollectorRegistry
     ) -> None:
-        cmd = 'show interfaces ethernet | include "^\\s+Last change"'
+        cmd = r'show interfaces ethernet | include "^\s+Last change"'
         result = await self._run_command(cmd)
         cur_port = -1
         counter = prometheus_client.Counter(
@@ -224,24 +256,19 @@ class Switch(Item):
                 if _OPERATIONAL_CHANGES_NEVER_RE.fullmatch(line):
                     counter.labels(*labels).inc(0)
                 else:
-                    logger.warning('Unexpected line in show interfaces ethernet: %s', line)
+                    logger.warning('Unexpected line in show interfaces ethernet link-diagnostics: %s', line)
 
-    _DIAGNOSTIC_CODE_TO_STATE = {
-        0: 'ok',
-        1024: 'unplugged',
-    }
-
-    async def _scrape_diagnostic_code(
+    async def _scrape_link_diagnostic_code(
         self,
         registry: prometheus_client.CollectorRegistry
     ) -> None:
-        cmd = 'show interfaces ethernet link-diagnostics | include "^\\s+Eth"'
+        cmd = r'show interfaces ethernet link-diagnostics | include "^\s+Eth"'
         result = await self._run_command(cmd)
         cur_port = -1
-        metric = prometheus_client.Enum(
+        metric = prometheus_client.Gauge(
             'switch_port_link_diagnostic_state', 'state of the link',
             labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description'),
-            registry=registry, states=['ok', 'unplugged', 'unknown'])
+            registry=registry)
         for line in result.splitlines():
             cur_port += 1
             port = self.ports[cur_port]
@@ -250,18 +277,30 @@ class Switch(Item):
             labels = (port, info.name, info.port_id, info.port_description)
             match = _DIAGNOSTIC_CODE_RE.match(line)
             if match:
-                state = self._DIAGNOSTIC_CODE_TO_STATE.get(int(match.group(1)), 'unknown')
-                metric.labels(*labels).state(state)
-                if state == 'unknown':
-                    logger.warning('Unknown diagnostic code: %s', match.group(1))
+                metric.labels(*labels).set(int(match.group(1)))
             else:
                 logger.warning('Unexpected line in show interfaces ethernet: %s', line)
 
-    async def _scrape_transciever_power(
+    async def _scrape_transceiver_power(
         self,
         registry: prometheus_client.CollectorRegistry
     ) -> None:
-        result = await self._run_command('enable\nshow interfaces ethernet transceiver diagnostics')
+        result = await self._run_command(r'enable\nshow interfaces ethernet transceiver diagnostics')
+        results = _TRANSCEIVER_POWER_SECTION_RE.split(result)
+
+        sections: List[Tuple[str, str]] = []
+        # When using re.split() with capturing groups, the result alternates:
+        # [text_before_first_match, captured_group_1, text_after_match_1, captured_group_2,
+        # text_after_match_2, ...]
+        # Skip the first element (text before any match), then iterate in pairs: (port, section)
+        for i in range(1, len(results), 2):
+            if i + 1 >= len(results):
+                break
+            sections.append((results[i], results[i + 1]))
+        await asyncio.gather(*[self._scrape_transceiver_power_port(port, section, registry) for port, section in sections])
+
+    async def _scrape_transceiver_power_port(self, port: str, section: str, registry: prometheus_client.CollectorRegistry) -> None:
+
         transceiver_power_guage = prometheus_client.Gauge(
             'switch_port_transceiver_power_dbm', 'power of the tx channel in decibel milliwatts',
             labelnames=(
@@ -291,68 +330,39 @@ class Switch(Item):
             registry=registry
         )
 
-        results = _TRANSCEIVER_POWER_SECTION_RE.split(result)
+        info = self.lldp_info.get(port, LLDPRemoteInfo())
+        labels = (port, info.name, info.port_id, info.port_description)
 
-        # When using re.split() with capturing groups, the result alternates:
-        # [text_before_first_match, captured_group_1, text_after_match_1, captured_group_2,
-        # text_after_match_2, ...]
-        # Skip the first element (text before any match), then iterate in pairs: (port, section)
-        for i in range(1, len(results), 2):
-            if i + 1 >= len(results):
-                break
-            port = results[i]
-            section = results[i + 1]
+        matches = _TRANSCEIVER_POWER_RX_RE.finditer(section)
+        for match in matches:
+            child = transceiver_power_guage.labels(*labels, match.group(1), 'rx')
+            child.set(float(match.group(2)))
 
-            info = self.lldp_info.get(port, LLDPRemoteInfo())
-            labels = (port, info.name, info.port_id, info.port_description)
+        matches = _TRANSCEIVER_POWER_TX_RE.finditer(section)
+        for match in matches:
+            child = transceiver_power_guage.labels(*labels, match.group(1), 'tx')
+            child.set(float(match.group(2)))
 
-            matches = _TRANSCEIVER_POWER_RX_RE.finditer(section)
-            for match in matches:
-                child = transceiver_power_guage.labels(*labels, match.group(1), 'rx')
-                child.set(float(match.group(2)))
+        matches = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.findall(section)
+        if matches:
+            child = transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'rx')
+            child.set(float(matches[0]))
 
-            matches = _TRANSCEIVER_POWER_TX_RE.finditer(section)
-            for match in matches:
-                child = transceiver_power_guage.labels(*labels, match.group(1), 'tx')
-                child.set(float(match.group(2)))
+        matches = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.findall(section)
+        if matches:
+            child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'rx')
+            child.set(float(matches[0]))
 
-            matches = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.findall(section)
-            if matches:
-                child = transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'rx')
-                child.set(float(matches[0]))
+        matches = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.findall(section)
+        if matches:
+            child = transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'tx')
+            child.set(float(matches[0]))
 
-            matches = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.findall(section)
-            if matches:
-                child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'rx')
-                child.set(float(matches[0]))
-
-            matches = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.findall(section)
-            if matches:
-                child = transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'tx')
-                child.set(float(matches[0]))
-
-            matches = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.findall(section)
-            if matches:
-                child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'tx')
-                child.set(float(matches[0]))
-
-    async def _limit_concurrency(
-        self,
-        coroutines: List[Coroutine[Any, Any, None]],
-        limit: int
-    ) -> AsyncGenerator[None, None]:
-        """Limit the total number of concurrent coroutines that uses the switch
-
-        The switch has a limit on the number of concurrent ssh sessions it can
-        handle before refusing new connections.
-        """
-        semaphore = asyncio.Semaphore(limit)
-
-        async def wrapper(coroutine) -> None:
-            async with semaphore:
-                return await coroutine
-
-        await asyncio.gather(*map(wrapper, coroutines))
+        matches = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.findall(section)
+        if matches:
+            child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'tx')
+            child.set(float(matches[0]))
+            
 
     async def scrape(self) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
@@ -360,19 +370,33 @@ class Switch(Item):
         await self._update_lldp()
         registry = prometheus_client.CollectorRegistry()
 
-        await self._limit_concurrency(
-            [
-                self._scrape_counters(registry),
-                self._scrape_state(registry),
-                self._scrape_operational_changes(registry),
-                self._scrape_diagnostic_code(registry),
-                self._scrape_transciever_power(registry)
-            ],
-            5
-        )
-        return registry
+        scrapers = [
+            self._scrape_counters(registry),
+            self._scrape_state(registry),
+            self._scrape_operational_changes(registry),
+            self._scrape_link_diagnostic_code(registry),
+            self._scrape_transceiver_power(registry),
+        ]
+        tasks = [asyncio.create_task(s, name=s.__name__) for s in scrapers]
+        done, pending = await asyncio.wait(tasks, timeout=8)
+        for task in pending:
+            logger.error('[%s] Cancelled scraping metrics: %s', self.hostname, task.get_name())
+            task.cancel()
+        for task in done:
+            try:
+                task.result()
+            except Exception as e:
+                logger.error('[%s] Error scraping metrics: %s', self.hostname, e)
+                logger.error('[%s] Traceback: %s', self.hostname, traceback.format_exc())
+                raise
 
+        return registry
+    
+    @override
     async def close(self) -> None:
+        if self.process_pool:
+            self.process_pool.close()
+            self.process_pool = None
         if self.conn:
             self.conn.close()
             await self.conn.wait_closed()
