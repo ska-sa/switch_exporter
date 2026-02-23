@@ -3,7 +3,7 @@ import asyncio
 import re
 import time
 import traceback
-from typing import Any, AsyncGenerator, Callable, Coroutine, Dict, List, Tuple
+from typing import Dict, List, Tuple
 from typing_extensions import override       # noqa: F401
 
 import attr
@@ -54,7 +54,7 @@ class ProcessPool:
         self.conn = conn
         self.process_stack = []       # type: List[asyncssh.SSHClientProcess[str]]
         self.semaphore = asyncio.Semaphore(5)
-        self._lock = asyncio.Lock()   # Serialises refills 
+        self._lock = asyncio.Lock()   # Serialises refills
 
     async def run_process(self, command: str) -> str:
         """Get a process from the pool."""
@@ -87,6 +87,7 @@ class Switch(Item):
     does not automatically reconnect: if you get a connection error, throw
     it away (via :meth:`destroy`) and create a new one.
     """
+
     def __init__(self, cache: Cache, hostname: str, username: str,
                  password: str, keyfile: str, lldp_timeout: float) -> None:
         super().__init__(cache, hostname)
@@ -256,7 +257,8 @@ class Switch(Item):
                 if _OPERATIONAL_CHANGES_NEVER_RE.fullmatch(line):
                     counter.labels(*labels).inc(0)
                 else:
-                    logger.warning('Unexpected line in show interfaces ethernet link-diagnostics: %s', line)
+                    logger.warning(
+                        'Unexpected line in show interfaces ethernet link-diagnostics: %s', line)
 
     async def _scrape_link_diagnostic_code(
         self,
@@ -285,10 +287,12 @@ class Switch(Item):
         self,
         registry: prometheus_client.CollectorRegistry
     ) -> None:
-        result = await self._run_command(r'enable\nshow interfaces ethernet transceiver diagnostics')
+        result = await self._run_command(
+            r'enable\nshow interfaces ethernet transceiver diagnostics'
+        )
         results = _TRANSCEIVER_POWER_SECTION_RE.split(result)
 
-        sections: List[Tuple[str, str]] = []
+        coroutines: List[Tuple[str, str]] = []
         # When using re.split() with capturing groups, the result alternates:
         # [text_before_first_match, captured_group_1, text_after_match_1, captured_group_2,
         # text_after_match_2, ...]
@@ -296,10 +300,17 @@ class Switch(Item):
         for i in range(1, len(results), 2):
             if i + 1 >= len(results):
                 break
-            sections.append((results[i], results[i + 1]))
-        await asyncio.gather(*[self._scrape_transceiver_power_port(port, section, registry) for port, section in sections])
+            port = results[i]
+            section = results[i + 1]
+            coroutines.append(self._scrape_transceiver_power_port(port, section, registry))
+        await asyncio.gather(*coroutines)
 
-    async def _scrape_transceiver_power_port(self, port: str, section: str, registry: prometheus_client.CollectorRegistry) -> None:
+    async def _scrape_transceiver_power_port(
+        self,
+        port: str,
+        section: str,
+        registry: prometheus_client.CollectorRegistry,
+    ) -> None:
 
         transceiver_power_guage = prometheus_client.Gauge(
             'switch_port_transceiver_power_dbm', 'power of the tx channel in decibel milliwatts',
@@ -362,7 +373,6 @@ class Switch(Item):
         if matches:
             child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'tx')
             child.set(float(matches[0]))
-            
 
     async def scrape(self) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
@@ -391,7 +401,7 @@ class Switch(Item):
                 raise
 
         return registry
-    
+
     @override
     async def close(self) -> None:
         if self.process_pool:
