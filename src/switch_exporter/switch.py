@@ -15,6 +15,7 @@ from . import metrics
 
 
 logger = logging.getLogger(__name__)
+MAXIMUM_CONCURRENT_SSH_PROCESSES = 5
 _PORT_RE = re.compile(r'^Eth([^ :]*)(?: \(.*\))?:?$')
 _COUNTER_RE = re.compile(r'^(\d+) +(.*)$')
 _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subtype:)')
@@ -50,6 +51,10 @@ class LLDPRemoteInfo:
 
 
 class ProcessPool:
+    """Pool of asyncssh SSHClientProcesses for running commands on the switch.
+    
+    The pool allows us to create the channels before the scraping starts.
+    """
     def __init__(self, conn: asyncssh.SSHClientConnection) -> None:
         self.conn = conn
         self.process_stack = []       # type: List[asyncssh.SSHClientProcess[str]]
@@ -64,6 +69,7 @@ class ProcessPool:
             process = self.process_stack.pop(0)
             logger.debug('Running command %s', command)
             stdout, stderr = await process.communicate(command)
+            process.close()
             if stderr:
                 logger.error('[%s] Error running command %s: %s', self.hostname, command, stderr)
             return stdout
@@ -76,7 +82,7 @@ class ProcessPool:
 
     async def refill_stack(self) -> None:
         async with self._lock:
-            for _ in range(max(0, 5 - len(self.process_stack))):
+            for _ in range(max(0, MAXIMUM_CONCURRENT_SSH_PROCESSES - len(self.process_stack))):
                 self.process_stack.append(await self.conn.create_process())
 
 
