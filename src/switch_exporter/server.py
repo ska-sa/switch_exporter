@@ -6,7 +6,6 @@ import logging
 
 import katsdpservices
 from aiohttp import web
-import async_timeout
 import prometheus_client
 
 from .switch import Switch

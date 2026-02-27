@@ -3,7 +3,7 @@ import asyncio
 import re
 import time
 import traceback
-from typing import Coroutine, Dict, List, Tuple
+from typing import Coroutine, Dict, List
 from typing_extensions import override       # noqa: F401
 
 import attr
@@ -52,9 +52,10 @@ class LLDPRemoteInfo:
 
 class ProcessPool:
     """Pool of asyncssh SSHClientProcesses for running commands on the switch.
-    
+
     The pool allows us to create the channels before the scraping starts.
     """
+
     def __init__(self, conn: asyncssh.SSHClientConnection) -> None:
         self.conn = conn
         self.process_stack = []       # type: List[asyncssh.SSHClientProcess[str]]
@@ -210,7 +211,7 @@ class Switch(Item):
             if match:
                 self.ports.append(match.group(1))
 
-    async def _update_lldp(self) -> None:
+    async def _update_lldp_periodically(self) -> None:
         """Ensure the LLDP information is up to date"""
         now = time.time()
         if now - self.lldp_time < self.lldp_timeout:
@@ -223,7 +224,7 @@ class Switch(Item):
             'show lldp interfaces ethernet remote '
             '| include "^Eth|^ *Remote port description *:'
             '|^ *Remote system name *:|^ *Remote port-id *:"'
-            )
+        )
         port = None
         info = LLDPRemoteInfo()
         new_lldp = {}
@@ -379,7 +380,7 @@ class Switch(Item):
                 child.set(float(matches[0]))
 
     async def timed(self, coroutine: Coroutine) -> Coroutine:
-        
+
         start_time = time.perf_counter()
         result = await coroutine
         end_time = time.perf_counter()
@@ -392,7 +393,7 @@ class Switch(Item):
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
         await self._connect()
-        await self._update_lldp()
+        await self._update_lldp_periodically()
 
         # Clear scrape-populated metrics to avoid stale series and to ensure
         # Counters reflect the current absolute value (we re-add samples below).
@@ -414,7 +415,8 @@ class Switch(Item):
             self._scrape_transceiver_power(self.registry),
         ]
         tasks = [asyncio.create_task(self.timed(s), name=s.__name__) for s in scrapers]
-        done, pending = await asyncio.wait(tasks, timeout=timeout - (time.perf_counter() - start_time))
+        timeout = timeout - (time.perf_counter() - start_time)
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
         for task in pending:
             logger.error('[%s] Cancelling scraping metrics: %s', self.hostname, task.get_name())
             task.cancel()
