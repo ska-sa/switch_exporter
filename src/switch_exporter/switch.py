@@ -3,7 +3,7 @@ import asyncio
 import re
 import time
 import traceback
-from typing import Dict, List, Tuple
+from typing import Coroutine, Dict, List, Tuple
 from typing_extensions import override       # noqa: F401
 
 import attr
@@ -13,8 +13,9 @@ import prometheus_client
 from .cache import Cache, Item
 from . import metrics
 
-
+CANCEL_TIMEOUT = 7
 logger = logging.getLogger(__name__)
+
 MAXIMUM_CONCURRENT_SSH_PROCESSES = 5
 _PORT_RE = re.compile(r'^Eth([^ :]*)(?: \(.*\))?:?$')
 _COUNTER_RE = re.compile(r'^(\d+) +(.*)$')
@@ -22,9 +23,11 @@ _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subt
 _REMOTE_PORT_DESCRIPTION_RE = \
     re.compile(r'^Remote port description *: (?!Not Advertised)(?!N\\A)(.*)$')
 _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
+_OPERATIONAL_CHANGES_SECTION_RE = \
+    re.compile(r'Last change in operational status: (.*)')
 _OPERATIONAL_CHANGES_RE = \
-    re.compile(r'Last change in operational status: (.*) \((\d+) oper change\)')
-_OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Last change in operational status: Never')
+    re.compile(r'(.*) \((\d+) oper change\)')
+_OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Never')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
 _TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
@@ -108,6 +111,76 @@ class Switch(Item):
         self.lldp_time = 0.0          # time when LLDP info was last updated
         self.lldp_timeout = lldp_timeout
         self._lock = asyncio.Lock()   # Serialises connect and update_lldp
+        self.enable_timing_metrics = True
+        self.registry = prometheus_client.CollectorRegistry()
+
+        # All Prometheus metric objects are initialised up-front and then
+        # populated/cleared on each scrape. This avoids duplicate registrations
+        # and makes per-scrape code purely about setting values.
+        self.timing_histogram = prometheus_client.Histogram(
+            'switch_coroutine_duration_seconds', 'duration of the coroutine',
+            labelnames=('hostname', 'coroutine'),
+            registry=self.registry
+        )
+
+        self.interface_counters = {}
+        for name in metrics.COUNTERS:
+            metric = metrics.name_to_metric(name)
+            self.interface_counters[name] = prometheus_client.Counter(
+                metric, 'total number of ' + name,
+                labelnames=('port', 'direction', 'remote_name',
+                            'remote_port_id', 'remote_port_description'),
+                registry=self.registry
+            )
+
+        _state_labelnames = ('port', 'remote_name', 'remote_port_id', 'remote_port_description')
+        self.port_enabled = prometheus_client.Gauge(
+            'switch_port_enabled', 'whether port is administratively enabled',
+            labelnames=_state_labelnames,
+            registry=self.registry,
+        )
+        self.port_up = prometheus_client.Gauge(
+            'switch_port_up', 'whether port is currently up',
+            labelnames=_state_labelnames,
+            registry=self.registry,
+        )
+        self.port_operational_changes = prometheus_client.Counter(
+            'switch_port_operational_changes_total', 'total number of operational changes',
+            labelnames=_state_labelnames,
+            registry=self.registry
+        )
+        self.port_link_diagnostic_state = prometheus_client.Gauge(
+            'switch_port_link_diagnostic_state', 'state of the link',
+            labelnames=_state_labelnames,
+            registry=self.registry
+        )
+
+        self.port_transceiver_power = prometheus_client.Gauge(
+            'switch_port_transceiver_power_dbm', 'power of the tx channel in decibel milliwatts',
+            labelnames=(
+                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
+                'channel', 'direction'
+            ),
+            registry=self.registry
+        )
+        self.port_transceiver_hi_power_alarm_threshold = prometheus_client.Gauge(
+            'switch_port_transceiver_hi_power_alarm_threshold_dbm',
+            'hi power alarm threshold in decibel milliwatts',
+            labelnames=(
+                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
+                'direction'
+            ),
+            registry=self.registry
+        )
+        self.port_transceiver_low_power_alarm_threshold = prometheus_client.Gauge(
+            'switch_port_transceiver_low_power_alarm_threshold_dbm',
+            'low power alarm threshold in decibel milliwatts',
+            labelnames=(
+                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
+                'direction'
+            ),
+            registry=self.registry
+        )
 
     def __repr__(self) -> str:
         return 'Switch({!r})'.format(self.hostname)
@@ -178,21 +251,13 @@ class Switch(Item):
         self.lldp_info = new_lldp
         self.lldp_time = time.time()
 
-    async def _scrape_counters(self, registry: prometheus_client.CollectorRegistry) -> None:
+    async def _scrape_counters(self, _registry: prometheus_client.CollectorRegistry) -> None:
         cmd = ['show interfaces ethernet {} counters'.format(port)
                for port in self.ports]
         result = await self._run_command('\n'.join(cmd))
         cur_port = -1
         direction = None
         port = None
-        counters = {}
-        for name in metrics.COUNTERS:
-            metric = metrics.name_to_metric(name)
-            counters[name] = prometheus_client.Counter(
-                metric, 'total number of ' + name,
-                labelnames=('port', 'direction', 'remote_name',
-                            'remote_port_id', 'remote_port_description'),
-                registry=registry)
         info = dummy_info = LLDPRemoteInfo()
         for line in result.splitlines():
             line = line.strip()
@@ -212,22 +277,11 @@ class Switch(Item):
                     name = match.group(2)
                     labels = (port, direction, info.name,
                               info.port_id, info.port_description)
-                    counters[name].labels(*labels).inc(count)
+                    self.interface_counters[name].labels(*labels).inc(count)
 
-    async def _scrape_state(self, registry: prometheus_client.CollectorRegistry) -> None:
+    async def _scrape_state(self, _registry: prometheus_client.CollectorRegistry) -> None:
         result = await self._run_command('show interfaces ethernet description')
         dummy_info = LLDPRemoteInfo()
-        labelnames = ('port', 'remote_name', 'remote_port_id', 'remote_port_description')
-        enabled = prometheus_client.Gauge(
-            'switch_port_enabled', 'whether port is administratively enabled',
-            labelnames=labelnames,
-            registry=registry,
-        )
-        up = prometheus_client.Gauge(
-            'switch_port_up', 'whether port is currently up',
-            labelnames=labelnames,
-            registry=registry,
-        )
         for line in result.splitlines():
             line = line.strip()
             if line.startswith('Eth'):
@@ -235,48 +289,46 @@ class Switch(Item):
                 port = fields[0][3:]
                 info = self.lldp_info.get(port, dummy_info)
                 labels = (port, info.name, info.port_id, info.port_description)
-                enabled.labels(*labels).set(int(fields[1] == 'Enabled'))
-                up.labels(*labels).set(int(fields[2] == 'Up'))
+                self.port_enabled.labels(*labels).set(int(fields[1] == 'Enabled'))
+                self.port_up.labels(*labels).set(int(fields[2] == 'Up'))
 
     async def _scrape_operational_changes(
         self,
-        registry: prometheus_client.CollectorRegistry
+        _registry: prometheus_client.CollectorRegistry
     ) -> None:
-        cmd = r'show interfaces ethernet | include "^\s+Last change"'
+        cmd = r'show interfaces ethernet'
         result = await self._run_command(cmd)
         cur_port = -1
-        counter = prometheus_client.Counter(
-            'switch_port_operational_changes_total', 'total number of operational changes',
-            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description'),
-            registry=registry)
-        for line in result.splitlines():
+        results = _OPERATIONAL_CHANGES_SECTION_RE.split(result)
+        for i in range(1, len(results), 2):
+            if i + 1 >= len(results):
+                break
+            port = results[i]
+            section = results[i + 1]
             cur_port += 1
             port = self.ports[cur_port]
-            line = line.strip()
             info = self.lldp_info.get(port, LLDPRemoteInfo())
             labels = (port, info.name, info.port_id, info.port_description)
-            match = _OPERATIONAL_CHANGES_RE.fullmatch(line)
-            if match:
+            matches = _OPERATIONAL_CHANGES_RE.finditer(section)
+            found = False
+            for match in matches:
                 last_change_total = int(match.group(2))
-                counter.labels(*labels).inc(last_change_total)
-            else:
-                if _OPERATIONAL_CHANGES_NEVER_RE.fullmatch(line):
-                    counter.labels(*labels).inc(0)
-                else:
-                    logger.warning(
-                        'Unexpected line in show interfaces ethernet link-diagnostics: %s', line)
+                self.port_operational_changes.labels(*labels).inc(last_change_total)
+                found = True
+            if not found:
+                for match in _OPERATIONAL_CHANGES_NEVER_RE.finditer(section):
+                    self.port_operational_changes.labels(*labels).inc(0)
+                    found = True
+            if not found:
+                logger.warning('Unexpected section in show interfaces ethernet: %s', section)
 
     async def _scrape_link_diagnostic_code(
         self,
-        registry: prometheus_client.CollectorRegistry
+        _registry: prometheus_client.CollectorRegistry
     ) -> None:
         cmd = r'show interfaces ethernet link-diagnostics | include "^\s+Eth"'
         result = await self._run_command(cmd)
         cur_port = -1
-        metric = prometheus_client.Gauge(
-            'switch_port_link_diagnostic_state', 'state of the link',
-            labelnames=('port', 'remote_name', 'remote_port_id', 'remote_port_description'),
-            registry=registry)
         for line in result.splitlines():
             cur_port += 1
             port = self.ports[cur_port]
@@ -285,20 +337,18 @@ class Switch(Item):
             labels = (port, info.name, info.port_id, info.port_description)
             match = _DIAGNOSTIC_CODE_RE.match(line)
             if match:
-                metric.labels(*labels).set(int(match.group(1)))
+                self.port_link_diagnostic_state.labels(*labels).set(int(match.group(1)))
             else:
                 logger.warning('Unexpected line in show interfaces ethernet: %s', line)
 
     async def _scrape_transceiver_power(
         self,
-        registry: prometheus_client.CollectorRegistry
+        _registry: prometheus_client.CollectorRegistry
     ) -> None:
         result = await self._run_command(
             r'enable\nshow interfaces ethernet transceiver diagnostics'
         )
         results = _TRANSCEIVER_POWER_SECTION_RE.split(result)
-
-        coroutines: List[Tuple[str, str]] = []
         # When using re.split() with capturing groups, the result alternates:
         # [text_before_first_match, captured_group_1, text_after_match_1, captured_group_2,
         # text_after_match_2, ...]
@@ -308,95 +358,77 @@ class Switch(Item):
                 break
             port = results[i]
             section = results[i + 1]
-            coroutines.append(self._scrape_transceiver_power_port(port, section, registry))
-        await asyncio.gather(*coroutines)
+            info = self.lldp_info.get(port, LLDPRemoteInfo())
+            labels = (port, info.name, info.port_id, info.port_description)
 
-    async def _scrape_transceiver_power_port(
-        self,
-        port: str,
-        section: str,
-        registry: prometheus_client.CollectorRegistry,
-    ) -> None:
+            matches = _TRANSCEIVER_POWER_RX_RE.finditer(section)
+            for match in matches:
+                child = self.port_transceiver_power.labels(*labels, match.group(1), 'rx')
+                child.set(float(match.group(2)))
 
-        transceiver_power_guage = prometheus_client.Gauge(
-            'switch_port_transceiver_power_dbm', 'power of the tx channel in decibel milliwatts',
-            labelnames=(
-                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
-                'channel', 'direction'
-            ),
-            registry=registry
-        )
+            matches = _TRANSCEIVER_POWER_TX_RE.finditer(section)
+            for match in matches:
+                child = self.port_transceiver_power.labels(*labels, match.group(1), 'tx')
+                child.set(float(match.group(2)))
 
-        transceiver_hi_power_alarm_threshold_guage = prometheus_client.Gauge(
-            'switch_port_transceiver_hi_power_alarm_threshold_dbm',
-            'hi power alarm threshold in decibel milliwatts',
-            labelnames=(
-                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
-                'direction'
-            ),
-            registry=registry
-        )
+            matches = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.findall(section)
+            if matches:
+                child = self.port_transceiver_hi_power_alarm_threshold.labels(*labels, 'rx')
+                child.set(float(matches[0]))
 
-        transceiver_low_power_alarm_threshold_guage = prometheus_client.Gauge(
-            'switch_port_transceiver_low_power_alarm_threshold_dbm',
-            'low power alarm threshold in decibel milliwatts',
-            labelnames=(
-                'port', 'remote_name', 'remote_port_id', 'remote_port_description',
-                'direction'
-            ),
-            registry=registry
-        )
+            matches = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.findall(section)
+            if matches:
+                child = self.port_transceiver_low_power_alarm_threshold.labels(*labels, 'rx')
+                child.set(float(matches[0]))
 
-        info = self.lldp_info.get(port, LLDPRemoteInfo())
-        labels = (port, info.name, info.port_id, info.port_description)
+            matches = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.findall(section)
+            if matches:
+                child = self.port_transceiver_hi_power_alarm_threshold.labels(*labels, 'tx')
+                child.set(float(matches[0]))
 
-        matches = _TRANSCEIVER_POWER_RX_RE.finditer(section)
-        for match in matches:
-            child = transceiver_power_guage.labels(*labels, match.group(1), 'rx')
-            child.set(float(match.group(2)))
+            matches = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.findall(section)
+            if matches:
+                child = self.port_transceiver_low_power_alarm_threshold.labels(*labels, 'tx')
+                child.set(float(matches[0]))
 
-        matches = _TRANSCEIVER_POWER_TX_RE.finditer(section)
-        for match in matches:
-            child = transceiver_power_guage.labels(*labels, match.group(1), 'tx')
-            child.set(float(match.group(2)))
-
-        matches = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.findall(section)
-        if matches:
-            child = transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'rx')
-            child.set(float(matches[0]))
-
-        matches = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.findall(section)
-        if matches:
-            child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'rx')
-            child.set(float(matches[0]))
-
-        matches = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.findall(section)
-        if matches:
-            child = transceiver_hi_power_alarm_threshold_guage.labels(*labels, 'tx')
-            child.set(float(matches[0]))
-
-        matches = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.findall(section)
-        if matches:
-            child = transceiver_low_power_alarm_threshold_guage.labels(*labels, 'tx')
-            child.set(float(matches[0]))
+    async def timed(self, coroutine: Coroutine) -> Coroutine:
+        
+        start_time = time.perf_counter()
+        result = await coroutine
+        end_time = time.perf_counter()
+        duration = end_time - start_time
+        if self.enable_timing_metrics:
+            self.timing_histogram.labels(self.hostname, coroutine.__name__).observe(duration)
+        return result
 
     async def scrape(self) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         await self._connect()
         await self._update_lldp()
-        registry = prometheus_client.CollectorRegistry()
+
+        # Clear scrape-populated metrics to avoid stale series and to ensure
+        # Counters reflect the current absolute value (we re-add samples below).
+        for counter in self.interface_counters.values():
+            counter.clear()
+        self.port_enabled.clear()
+        self.port_up.clear()
+        self.port_operational_changes.clear()
+        self.port_link_diagnostic_state.clear()
+        self.port_transceiver_power.clear()
+        self.port_transceiver_hi_power_alarm_threshold.clear()
+        self.port_transceiver_low_power_alarm_threshold.clear()
 
         scrapers = [
-            self._scrape_counters(registry),
-            self._scrape_state(registry),
-            self._scrape_operational_changes(registry),
-            self._scrape_link_diagnostic_code(registry),
-            self._scrape_transceiver_power(registry),
+            self._scrape_counters(self.registry),
+            self._scrape_state(self.registry),
+            self._scrape_operational_changes(self.registry),
+            self._scrape_link_diagnostic_code(self.registry),
+            self._scrape_transceiver_power(self.registry),
         ]
-        tasks = [asyncio.create_task(s, name=s.__name__) for s in scrapers]
-        done, pending = await asyncio.wait(tasks, timeout=8)
+        tasks = [asyncio.create_task(self.timed(s), name=s.__name__) for s in scrapers]
+        done, pending = await asyncio.wait(tasks, timeout=CANCEL_TIMEOUT)
         for task in pending:
-            logger.error('[%s] Cancelled scraping metrics: %s', self.hostname, task.get_name())
+            logger.error('[%s] Cancelling scraping metrics: %s after %s seconds', self.hostname, task.get_name(), CANCEL_TIMEOUT)
             task.cancel()
         for task in done:
             try:
@@ -406,7 +438,7 @@ class Switch(Item):
                 logger.error('[%s] Traceback: %s', self.hostname, traceback.format_exc())
                 raise
 
-        return registry
+        return self.registry
 
     @override
     async def close(self) -> None:
