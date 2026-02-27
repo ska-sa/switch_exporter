@@ -6,7 +6,6 @@ import logging
 
 import katsdpservices
 from aiohttp import web
-import async_timeout
 import prometheus_client
 
 from .switch import Switch
@@ -27,13 +26,14 @@ async def get_metrics(request: web.Request) -> web.Response:
     switch = cache.get(target)
     timeout = request.app['scrape_timeout']
     try:
-        with async_timeout.timeout(timeout), switch:
-            counters = await switch.scrape()
+        with switch:
+            counters = await switch.scrape(timeout)
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:
         raise web.HTTPGatewayTimeout(
             text='Scrape timed out after {}s'.format(timeout))
+
     except Exception as exc:
         # Possibly a failed connection, so reset it
         switch.destroy()
@@ -72,7 +72,7 @@ def get_arguments() -> argparse.Namespace:
         '--connection-timeout', type=float, default=120.0, metavar='SECONDS',
         help='Time to cache open SSH connections [%(default)s]')
     parser.add_argument(
-        '--scrape-timeout', type=float, default=8.0, metavar='SECONDS',
+        '--scrape-timeout', type=float, default=10.0, metavar='SECONDS',
         help='Timeout to obtain data from a switch [%(default)s]')
     parser.add_argument(
         '--lldp-timeout', type=float, default=300.0, metavar='SECONDS',
