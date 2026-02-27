@@ -13,7 +13,7 @@ import prometheus_client
 from .cache import Cache, Item
 from . import metrics
 
-CANCEL_TIMEOUT = 7
+CANCEL_TIMEOUT = 9
 logger = logging.getLogger(__name__)
 
 MAXIMUM_CONCURRENT_SSH_PROCESSES = 5
@@ -120,7 +120,8 @@ class Switch(Item):
         self.timing_histogram = prometheus_client.Histogram(
             'switch_coroutine_duration_seconds', 'duration of the coroutine',
             labelnames=('hostname', 'coroutine'),
-            registry=self.registry
+            registry=self.registry,
+            buckets=list(range(1, 12))+[float('inf')]
         )
 
         self.interface_counters = {}
