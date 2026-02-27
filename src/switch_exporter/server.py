@@ -27,8 +27,8 @@ async def get_metrics(request: web.Request) -> web.Response:
     switch = cache.get(target)
     timeout = request.app['scrape_timeout']
     try:
-        with async_timeout.timeout(timeout), switch:
-            counters = await switch.scrape()
+        with switch:
+            counters = await switch.scrape(timeout)
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:

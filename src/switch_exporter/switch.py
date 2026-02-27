@@ -13,7 +13,6 @@ import prometheus_client
 from .cache import Cache, Item
 from . import metrics
 
-CANCEL_TIMEOUT = 9
 logger = logging.getLogger(__name__)
 
 MAXIMUM_CONCURRENT_SSH_PROCESSES = 5
@@ -23,11 +22,9 @@ _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subt
 _REMOTE_PORT_DESCRIPTION_RE = \
     re.compile(r'^Remote port description *: (?!Not Advertised)(?!N\\A)(.*)$')
 _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
-_OPERATIONAL_CHANGES_SECTION_RE = \
-    re.compile(r'Last change in operational status: (.*)')
 _OPERATIONAL_CHANGES_RE = \
     re.compile(r'(.*) \((\d+) oper change\)')
-_OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'Never')
+_OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'(.*)Never')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
 _TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
@@ -193,14 +190,14 @@ class Switch(Item):
         """Establish the SSH connection"""
         if self.conn:
             return
-        async with self._lock:
-            await self._connect_unlocked()
+        await self._connect_unlocked()
 
     async def _connect_unlocked(self) -> None:
         self.conn = await asyncssh.connect(
             self.hostname, known_hosts=None,
             username=self.username, password=self.password,
-            client_keys=self.keyfile)
+            client_keys=self.keyfile
+        )
         self.process_pool = ProcessPool(self.conn)
         await self.process_pool.refill_stack()
         result = await self._run_command('show interfaces ethernet status')
@@ -218,15 +215,15 @@ class Switch(Item):
         now = time.time()
         if now - self.lldp_time < self.lldp_timeout:
             return
-        async with self._lock:
-            await self._update_lldp_unlocked()
+        await self._update_lldp()
 
-    async def _update_lldp_unlocked(self) -> None:
+    async def _update_lldp(self) -> None:
         logger.info('Updating LLDP information for %s', self.hostname)
         result = await self._run_command(
             'show lldp interfaces ethernet remote '
             '| include "^Eth|^ *Remote port description *:'
-            '|^ *Remote system name *:|^ *Remote port-id *:"')
+            '|^ *Remote system name *:|^ *Remote port-id *:"'
+            )
         port = None
         info = LLDPRemoteInfo()
         new_lldp = {}
@@ -250,7 +247,6 @@ class Switch(Item):
                 info.name = match.group(1)
                 continue
         self.lldp_info = new_lldp
-        self.lldp_time = time.time()
 
     async def _scrape_counters(self, _registry: prometheus_client.CollectorRegistry) -> None:
         cmd = ['show interfaces ethernet {} counters'.format(port)
@@ -297,31 +293,21 @@ class Switch(Item):
         self,
         _registry: prometheus_client.CollectorRegistry
     ) -> None:
-        cmd = r'show interfaces ethernet'
+        cmd = r'show interfaces ethernet | include "^\s+Last change in operational status: "'
         result = await self._run_command(cmd)
         cur_port = -1
-        results = _OPERATIONAL_CHANGES_SECTION_RE.split(result)
-        for i in range(1, len(results), 2):
-            if i + 1 >= len(results):
-                break
-            port = results[i]
-            section = results[i + 1]
+        for line in result.splitlines():
             cur_port += 1
             port = self.ports[cur_port]
             info = self.lldp_info.get(port, LLDPRemoteInfo())
             labels = (port, info.name, info.port_id, info.port_description)
-            matches = _OPERATIONAL_CHANGES_RE.finditer(section)
-            found = False
-            for match in matches:
-                last_change_total = int(match.group(2))
-                self.port_operational_changes.labels(*labels).inc(last_change_total)
-                found = True
-            if not found:
-                for match in _OPERATIONAL_CHANGES_NEVER_RE.finditer(section):
-                    self.port_operational_changes.labels(*labels).inc(0)
-                    found = True
-            if not found:
-                logger.warning('Unexpected section in show interfaces ethernet: %s', section)
+            match = _OPERATIONAL_CHANGES_RE.match(line)
+            if match:
+                self.port_operational_changes.labels(*labels).inc(int(match.group(2)))
+            else:
+                if not _OPERATIONAL_CHANGES_NEVER_RE.match(line):
+                    logger.warning('Unexpected line in show interfaces ethernet: %s', line)
+                self.port_operational_changes.labels(*labels).inc(0)
 
     async def _scrape_link_diagnostic_code(
         self,
@@ -402,8 +388,9 @@ class Switch(Item):
             self.timing_histogram.labels(self.hostname, coroutine.__name__).observe(duration)
         return result
 
-    async def scrape(self) -> prometheus_client.CollectorRegistry:
+    async def scrape(self, timeout: float) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
+        start_time = time.perf_counter()
         await self._connect()
         await self._update_lldp()
 
@@ -427,9 +414,9 @@ class Switch(Item):
             self._scrape_transceiver_power(self.registry),
         ]
         tasks = [asyncio.create_task(self.timed(s), name=s.__name__) for s in scrapers]
-        done, pending = await asyncio.wait(tasks, timeout=CANCEL_TIMEOUT)
+        done, pending = await asyncio.wait(tasks, timeout=timeout - (time.perf_counter() - start_time))
         for task in pending:
-            logger.error('[%s] Cancelling scraping metrics: %s after %s seconds', self.hostname, task.get_name(), CANCEL_TIMEOUT)
+            logger.error('[%s] Cancelling scraping metrics: %s', self.hostname, task.get_name())
             task.cancel()
         for task in done:
             try:
