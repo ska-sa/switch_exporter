@@ -8,6 +8,8 @@ import katsdpservices
 from aiohttp import web
 import prometheus_client
 
+from .connection_pool import ConnectionPoolFactory
+
 from .switch import Switch
 from .cache import Cache
 
@@ -33,7 +35,6 @@ async def get_metrics(request: web.Request) -> web.Response:
     except asyncio.TimeoutError:
         raise web.HTTPGatewayTimeout(
             text='Scrape timed out after {}s'.format(timeout))
-
     except Exception as exc:
         # Possibly a failed connection, so reset it
         switch.destroy()
@@ -45,12 +46,11 @@ async def get_metrics(request: web.Request) -> web.Response:
 
 def make_app(args: argparse.Namespace) -> web.Application:
     app = web.Application()
+    connection_pool_factory = ConnectionPoolFactory(args.username, args.password, args.keyfile)
     factory = functools.partial(
         Switch,
         lldp_timeout=args.lldp_timeout,
-        username=args.username,
-        password=args.password,
-        keyfile=args.keyfile)
+        connection_pool_factory=connection_pool_factory)
     app['cache'] = Cache(factory, args.connection_timeout)
     app['scrape_timeout'] = args.scrape_timeout
     app.router.add_get('/metrics', get_metrics)

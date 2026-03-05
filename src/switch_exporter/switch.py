@@ -4,18 +4,18 @@ import re
 import time
 import traceback
 from typing import Coroutine, Dict, List
-from typing_extensions import override       # noqa: F401
+from typing_extensions import override
 
 import attr
-import asyncssh
 import prometheus_client
+
+from .connection_pool import ConnectionPool, ConnectionPoolFactory
 
 from .cache import Cache, Item
 from . import metrics
 
 logger = logging.getLogger(__name__)
 
-MAXIMUM_CONCURRENT_SSH_PROCESSES = 5
 _PORT_RE = re.compile(r'^Eth([^ :]*)(?: \(.*\))?:?$')
 _COUNTER_RE = re.compile(r'^(\d+) +(.*)$')
 _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subtype:)')
@@ -26,65 +26,29 @@ _OPERATIONAL_CHANGES_RE = \
     re.compile(r'(.*) \((\d+) oper change\)')
 _OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'(.*)Never')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
-_TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
-_TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / ([-]?\d+\.\d+) dBm')
+_TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / (-?\d+\.\d+) dBm')
+_TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(
-    r'\s*Hi Rx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm'
+    r'\s*Hi Rx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
 _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE = re.compile(
-    r'\s*Low Rx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm'
+    r'\s*Low Rx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
 _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE = re.compile(
-    r'\s*Hi Tx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm'
+    r'\s*Hi Tx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
 _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
-    r'\s*Low Tx Power Alarm Thresh\s*: .* mW / ([-]?\d+\.\d+) dBm'
+    r'\s*Low Tx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
 _TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (.*) transceiver diagnostic data:')
-
+_LAST_LOGIN_RE = re.compile(r'\s*Last login: .*')
+_TOTAL_CONNECTIONS_SINCE_RE = re.compile(r'\s*Number of total successful connections since last .*')
 
 @attr.s(slots=True)
 class LLDPRemoteInfo:
     name = attr.ib(type=str, default='')
     port_id = attr.ib(type=str, default='')
     port_description = attr.ib(type=str, default='')
-
-
-class ProcessPool:
-    """Pool of asyncssh SSHClientProcesses for running commands on the switch.
-
-    The pool allows us to create the channels before the scraping starts.
-    """
-
-    def __init__(self, conn: asyncssh.SSHClientConnection) -> None:
-        self.conn = conn
-        self.process_stack = []       # type: List[asyncssh.SSHClientProcess[str]]
-        self.semaphore = asyncio.Semaphore(5)
-        self._lock = asyncio.Lock()   # Serialises refills
-
-    async def run_process(self, command: str) -> str:
-        """Get a process from the pool."""
-        async with self.semaphore:
-            if len(self.process_stack) == 0:
-                await self.refill_stack()
-            process = self.process_stack.pop(0)
-            logger.debug('Running command %s', command)
-            stdout, stderr = await process.communicate(command)
-            process.close()
-            if stderr:
-                logger.error('[%s] Error running command %s: %s', self.hostname, command, stderr)
-            return stdout
-
-    def close(self) -> None:
-        self.semaphore = asyncio.Semaphore(0)
-        for process in self.process_stack:
-            process.close()
-        self.process_stack = []
-
-    async def refill_stack(self) -> None:
-        async with self._lock:
-            for _ in range(max(0, MAXIMUM_CONCURRENT_SSH_PROCESSES - len(self.process_stack))):
-                self.process_stack.append(await self.conn.create_process())
 
 
 class Switch(Item):
@@ -95,16 +59,12 @@ class Switch(Item):
     it away (via :meth:`destroy`) and create a new one.
     """
 
-    def __init__(self, cache: Cache, hostname: str, username: str,
-                 password: str, keyfile: str, lldp_timeout: float) -> None:
+    def __init__(self, cache: Cache, hostname: str, lldp_timeout: float, connection_pool_factory: ConnectionPoolFactory) -> None:
         super().__init__(cache, hostname)
         self.conn = None
         self.ports = []               # type: List[str]
-        self.process_pool = None      # type: ProcessPool
+        self.connection_pool = connection_pool_factory.get_pool(hostname)      # type: ConnectionPool
         self.hostname = hostname
-        self.username = username
-        self.password = password
-        self.keyfile = keyfile
         self.lldp_info = {}           # type: Dict[str, LLDPRemoteInfo]
         self.lldp_time = 0.0          # time when LLDP info was last updated
         self.lldp_timeout = lldp_timeout
@@ -185,24 +145,21 @@ class Switch(Item):
         return 'Switch({!r})'.format(self.hostname)
 
     async def _run_command(self, command: str) -> str:
-        return await self.process_pool.run_process(command)
+        return await self.connection_pool.run_process(command)
 
-    async def _connect(self) -> None:
-        """Establish the SSH connection"""
-        if self.conn:
+    @staticmethod
+    def _remove_welcome_messages(lines: List[str]) -> List[str]:
+        if _LAST_LOGIN_RE.match(lines[0]):
+            lines = lines[1:]
+        if _TOTAL_CONNECTIONS_SINCE_RE.match(lines[0]):
+            lines = lines[1:]
+        return lines
+
+    async def _populate_ports(self) -> None:
+        """Populate the ports list"""
+        if self.ports != []: # ports are already populated
             return
-        await self._connect_unlocked()
-
-    async def _connect_unlocked(self) -> None:
-        self.conn = await asyncssh.connect(
-            self.hostname, known_hosts=None,
-            username=self.username, password=self.password,
-            client_keys=self.keyfile
-        )
-        self.process_pool = ProcessPool(self.conn)
-        await self.process_pool.refill_stack()
-        result = await self._run_command('show interfaces ethernet status')
-        self.ports = []
+        result = await self._run_command(r'show interfaces ethernet status')
         for line in result.splitlines():
             fields = line.split()
             if not fields:
@@ -221,9 +178,9 @@ class Switch(Item):
     async def _update_lldp(self) -> None:
         logger.info('Updating LLDP information for %s', self.hostname)
         result = await self._run_command(
-            'show lldp interfaces ethernet remote '
-            '| include "^Eth|^ *Remote port description *:'
-            '|^ *Remote system name *:|^ *Remote port-id *:"'
+            r'show lldp interfaces ethernet remote '
+            r'| include "^Eth|^ *Remote port description *:'
+            r'|^ *Remote system name *:|^ *Remote port-id *:"'
         )
         port = None
         info = LLDPRemoteInfo()
@@ -250,14 +207,17 @@ class Switch(Item):
         self.lldp_info = new_lldp
 
     async def _scrape_counters(self, _registry: prometheus_client.CollectorRegistry) -> None:
-        cmd = ['show interfaces ethernet {} counters'.format(port)
+        cmd = [f'show interfaces ethernet {port} counters'
                for port in self.ports]
         result = await self._run_command('\n'.join(cmd))
         cur_port = -1
         direction = None
         port = None
         info = dummy_info = LLDPRemoteInfo()
-        for line in result.splitlines():
+        lines = result.splitlines()
+        lines = self._remove_welcome_messages(lines)
+
+        for line in lines:
             line = line.strip()
             # MLNX-OS omits the colon, Onyx includes it
             if line in {'Rx', 'Rx:'}:
@@ -276,9 +236,10 @@ class Switch(Item):
                     labels = (port, direction, info.name,
                               info.port_id, info.port_description)
                     self.interface_counters[name].labels(*labels).inc(count)
+        assert cur_port == len(self.ports) - 1, f'cur_port: {cur_port}, ports: {len(self.ports)}'
 
     async def _scrape_state(self, _registry: prometheus_client.CollectorRegistry) -> None:
-        result = await self._run_command('show interfaces ethernet description')
+        result = await self._run_command(r'show interfaces ethernet description')
         dummy_info = LLDPRemoteInfo()
         for line in result.splitlines():
             line = line.strip()
@@ -296,8 +257,11 @@ class Switch(Item):
     ) -> None:
         cmd = r'show interfaces ethernet | include "^\s+Last change in operational status: "'
         result = await self._run_command(cmd)
+        # for some reasone the output may have the first line as a welcome message even after applying the include filter
+        lines = self._remove_welcome_messages(result.splitlines())
+        assert len(lines) == len(self.ports), f'lines: {len(lines)}, ports: {len(self.ports)}'
         cur_port = -1
-        for line in result.splitlines():
+        for line in lines:
             cur_port += 1
             port = self.ports[cur_port]
             info = self.lldp_info.get(port, LLDPRemoteInfo())
@@ -310,15 +274,25 @@ class Switch(Item):
                     logger.warning('Unexpected line in show interfaces ethernet: %s', line)
                 self.port_operational_changes.labels(*labels).inc(0)
 
+
     async def _scrape_link_diagnostic_code(
         self,
         _registry: prometheus_client.CollectorRegistry
     ) -> None:
         cmd = r'show interfaces ethernet link-diagnostics | include "^\s+Eth"'
         result = await self._run_command(cmd)
+        lines = result.splitlines()
+        # for some reasone the output may have the first line as a welcome message even after applying the include filter
+        lines = self._remove_welcome_messages(result.splitlines())
+
+        assert len(lines) == len(self.ports), f'lines: {len(lines)}, ports: {len(self.ports)}'
         cur_port = -1
-        for line in result.splitlines():
+        for line in lines:
             cur_port += 1
+            if cur_port >= len(self.ports):
+                logger.debug('cur_port: %s, ports: %s', cur_port, self.ports)
+                logger.debug('line: %s', line)
+                logger.debug('result: %s', result)
             port = self.ports[cur_port]
             line = line.strip()
             info = self.lldp_info.get(port, LLDPRemoteInfo())
@@ -327,7 +301,7 @@ class Switch(Item):
             if match:
                 self.port_link_diagnostic_state.labels(*labels).set(int(match.group(1)))
             else:
-                logger.warning('Unexpected line in show interfaces ethernet: %s', line)
+                logger.warning('Unexpected line in show interfaces ethernet link-diagnostics: %s', line)
 
     async def _scrape_transceiver_power(
         self,
@@ -392,7 +366,7 @@ class Switch(Item):
     async def scrape(self, timeout: float) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
-        await self._connect()
+        await self._populate_ports()
         await self._update_lldp_periodically()
 
         # Clear scrape-populated metrics to avoid stale series and to ensure
@@ -407,6 +381,7 @@ class Switch(Item):
         self.port_transceiver_hi_power_alarm_threshold.clear()
         self.port_transceiver_low_power_alarm_threshold.clear()
 
+        # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
         scrapers = [
             self._scrape_counters(self.registry),
             self._scrape_state(self.registry),
@@ -414,7 +389,7 @@ class Switch(Item):
             self._scrape_link_diagnostic_code(self.registry),
             self._scrape_transceiver_power(self.registry),
         ]
-        tasks = [asyncio.create_task(self.timed(s), name=s.__name__) for s in scrapers]
+        tasks = [asyncio.create_task(self.timed(s), name=s.__name__) for s in scrapers] 
         timeout = timeout - (time.perf_counter() - start_time)
         done, pending = await asyncio.wait(tasks, timeout=timeout)
         for task in pending:
@@ -432,10 +407,6 @@ class Switch(Item):
 
     @override
     async def close(self) -> None:
-        if self.process_pool:
-            self.process_pool.close()
-            self.process_pool = None
-        if self.conn:
-            self.conn.close()
-            await self.conn.wait_closed()
-            self.conn = None
+        if self.connection_pool:
+            self.connection_pool.close()
+            self.connection_pool = None
