@@ -8,7 +8,7 @@ import katsdpservices
 from aiohttp import web
 import prometheus_client
 
-from .connection_pool import ConnectionPoolFactory
+from .connection_factory import ConnectionFactory
 
 from .switch import Switch
 from .cache import Cache
@@ -46,11 +46,11 @@ async def get_metrics(request: web.Request) -> web.Response:
 
 def make_app(args: argparse.Namespace) -> web.Application:
     app = web.Application()
-    connection_pool_factory = ConnectionPoolFactory(args.username, args.password, args.keyfile)
+    connection_factory = ConnectionFactory(args.username, args.password, args.keyfile)
     factory = functools.partial(
         Switch,
         lldp_timeout=args.lldp_timeout,
-        connection_pool_factory=connection_pool_factory)
+        connection_factory=connection_factory)
     app['cache'] = Cache(factory, args.connection_timeout)
     app['scrape_timeout'] = args.scrape_timeout
     app.router.add_get('/metrics', get_metrics)
