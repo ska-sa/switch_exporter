@@ -78,7 +78,6 @@ class Switch(Item):
         self.lldp_timeout = lldp_timeout
         self._lock = asyncio.Lock()   # Serialises connect and update_lldp
         self.enable_timing_metrics = enable_timing_metrics
-        self.registry = prometheus_client.CollectorRegistry()
 
     def __repr__(self) -> str:
         return 'Switch({!r})'.format(self.hostname)
@@ -88,9 +87,9 @@ class Switch(Item):
 
     @staticmethod
     def _remove_welcome_messages(lines: List[str]) -> List[str]:
-        if _LAST_LOGIN_RE.match(lines[0]):
+        if len(lines) > 0 and _LAST_LOGIN_RE.match(lines[0]):
             lines = lines[1:]
-        if _TOTAL_CONNECTIONS_SINCE_RE.match(lines[0]):
+        if len(lines) > 0 and _TOTAL_CONNECTIONS_SINCE_RE.match(lines[0]):
             lines = lines[1:]
         return lines
 
@@ -153,7 +152,7 @@ class Switch(Item):
                 metric, 'total number of ' + name,
                 labelnames=('port', 'direction', 'remote_name',
                             'remote_port_id', 'remote_port_description'),
-                registry=self.registry
+                registry=_registry
             )
 
         cmd = [f'show interfaces ethernet {port} counters'
@@ -192,12 +191,12 @@ class Switch(Item):
         port_enabled = prometheus_client.Gauge(
             'switch_port_enabled', 'whether port is administratively enabled',
             labelnames=_state_labelnames,
-            registry=self.registry,
+            registry=_registry,
         )
         port_up = prometheus_client.Gauge(
             'switch_port_up', 'whether port is currently up',
             labelnames=_state_labelnames,
-            registry=self.registry,
+            registry=_registry,
         )
         result = await self._run_command(r'show interfaces ethernet description')
         dummy_info = LLDPRemoteInfo()
@@ -219,7 +218,7 @@ class Switch(Item):
         port_operational_changes = prometheus_client.Counter(
             'switch_port_operational_changes_total', 'total number of operational changes',
             labelnames=_state_labelnames,
-            registry=self.registry
+            registry=_registry
         )
 
         cmd = r'show interfaces ethernet | include "^\s+Last change in operational status: "'
@@ -250,7 +249,7 @@ class Switch(Item):
         port_link_diagnostic_state = prometheus_client.Gauge(
             'switch_port_link_diagnostic_state', 'state of the link',
             labelnames=_state_labelnames,
-            registry=self.registry
+            registry=_registry
         )
 
         cmd = r'show interfaces ethernet link-diagnostics | include "^\s+Eth"'
@@ -289,7 +288,7 @@ class Switch(Item):
                 'port', 'remote_name', 'remote_port_id', 'remote_port_description',
                 'channel', 'direction'
             ),
-            registry=self.registry
+            registry=_registry
         )
         port_transceiver_hi_power_alarm_threshold = prometheus_client.Gauge(
             'switch_port_transceiver_hi_power_alarm_threshold_dbm',
@@ -298,7 +297,7 @@ class Switch(Item):
                 'port', 'remote_name', 'remote_port_id', 'remote_port_description',
                 'direction'
             ),
-            registry=self.registry
+            registry=_registry
         )
         port_transceiver_low_power_alarm_threshold = prometheus_client.Gauge(
             'switch_port_transceiver_low_power_alarm_threshold_dbm',
@@ -307,7 +306,7 @@ class Switch(Item):
                 'port', 'remote_name', 'remote_port_id', 'remote_port_description',
                 'direction'
             ),
-            registry=self.registry
+            registry=_registry
         )
         result = await self._run_command(
             r'enable\nshow interfaces ethernet transceiver diagnostics'
@@ -368,22 +367,24 @@ class Switch(Item):
     async def scrape(self, timeout: float) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
-        await self._populate_ports()
-        await self._update_lldp_periodically()
+        async with self._lock:
+            await self._populate_ports()
+            await self._update_lldp_periodically()
 
+        registry = prometheus_client.CollectorRegistry()
         timing_guage = prometheus_client.Gauge(
             'switch_coroutine_duration_seconds', 'duration of the coroutine',
             labelnames=('hostname', 'coroutine'),
-            registry=self.registry,
+            registry=registry,
         )
 
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
         scrapers = [
-            self._scrape_counters(self.registry),
-            self._scrape_state(self.registry),
-            self._scrape_operational_changes(self.registry),
-            self._scrape_link_diagnostic_code(self.registry),
-            self._scrape_transceiver_power(self.registry),
+            self._scrape_counters(registry),
+            self._scrape_state(registry),
+            self._scrape_operational_changes(registry),
+            self._scrape_link_diagnostic_code(registry),
+            self._scrape_transceiver_power(registry),
         ]
         tasks = [asyncio.create_task(self.timed(s, timing_guage), name=s.__name__)
                  for s in scrapers]
@@ -400,7 +401,7 @@ class Switch(Item):
                 logger.error('[%s] Traceback: %s', self.hostname, traceback.format_exc())
                 raise
 
-        return self.registry
+        return registry
 
     @override
     async def close(self) -> None:
