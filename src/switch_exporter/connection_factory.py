@@ -30,9 +30,14 @@ class Connection:
         process = await self.conn.create_process()
         logger.debug('Running command %s', command)
         stdout, stderr = await process.communicate(command)
+        if process.returncode != 0:
+            logger.error(
+              '[%s] Error running command %s: return code %s',
+              self.hostname, command, process.returncode
+            )
+            logger.debug('[%s] Stdout: %s', self.hostname, stdout)
+            logger.debug('[%s] Stderr: %s', self.hostname, stderr)
         process.close()
-        if stderr:
-            logger.error('[%s] Error running command %s: %s', self.hostname, command, stderr)
         return stdout
 
     def close(self) -> None:

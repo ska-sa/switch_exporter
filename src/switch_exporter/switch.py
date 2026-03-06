@@ -259,7 +259,6 @@ class Switch(Item):
         # applying the include filter
         lines = self._remove_welcome_messages(result.splitlines())
 
-        assert len(lines) == len(self.ports), f'lines: {len(lines)}, ports: {len(self.ports)}'
         cur_port = -1
         for line in lines:
             cur_port += 1
@@ -309,16 +308,14 @@ class Switch(Item):
             registry=_registry
         )
         result = await self._run_command(
-            r'enable\nshow interfaces ethernet transceiver diagnostics'
+            r'enable'+'\n'+r'show interfaces ethernet transceiver diagnostics'
         )
         results = _TRANSCEIVER_POWER_SECTION_RE.split(result)
         # When using re.split() with capturing groups, the result alternates:
         # [text_before_first_match, captured_group_1, text_after_match_1, captured_group_2,
         # text_after_match_2, ...]
         # Skip the first element (text before any match), then iterate in pairs: (port, section)
-        for i in range(1, len(results), 2):
-            if i + 1 >= len(results):
-                break
+        for i in range(1, len(results) - 1, 2):
             port = results[i]
             section = results[i + 1]
             info = self.lldp_info.get(port, LLDPRemoteInfo())
@@ -355,7 +352,6 @@ class Switch(Item):
                 child.set(float(matches[0]))
 
     async def timed(self, coroutine: Coroutine, timing_guage: prometheus_client.Gauge) -> Coroutine:
-
         start_time = time.perf_counter()
         result = await coroutine
         end_time = time.perf_counter()
