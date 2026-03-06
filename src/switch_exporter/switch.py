@@ -2,7 +2,6 @@ import logging
 import asyncio
 import re
 import time
-import traceback
 from typing import Coroutine, Dict, List
 from typing_extensions import override
 
@@ -331,33 +330,33 @@ class Switch(Item):
                 child = port_transceiver_power.labels(*labels, match.group(1), 'tx')
                 child.set(float(match.group(2)))
 
-            matches = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.findall(section)
-            if matches:
+            match = _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE.search(section)
+            if match:
                 child = port_transceiver_hi_power_alarm_threshold.labels(*labels, 'rx')
-                child.set(float(matches[0]))
+                child.set(float(match.group(1)))
 
-            matches = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.findall(section)
-            if matches:
+            match = _TRANSCEIVER_POWER_LOW_RX_THRESHOLD_RE.search(section)
+            if match:
                 child = port_transceiver_low_power_alarm_threshold.labels(*labels, 'rx')
-                child.set(float(matches[0]))
+                child.set(float(match.group(1)))
 
-            matches = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.findall(section)
-            if matches:
+            match = _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE.search(section)
+            if match:
                 child = port_transceiver_hi_power_alarm_threshold.labels(*labels, 'tx')
-                child.set(float(matches[0]))
+                child.set(float(match.group(1)))
 
-            matches = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.findall(section)
-            if matches:
+            match = _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE.search(section)
+            if match:
                 child = port_transceiver_low_power_alarm_threshold.labels(*labels, 'tx')
-                child.set(float(matches[0]))
+                child.set(float(match.group(1)))
 
-    async def timed(self, coroutine: Coroutine, timing_guage: prometheus_client.Gauge) -> Coroutine:
+    async def timed(self, coroutine: Coroutine, timing_gauge: prometheus_client.Gauge) -> Coroutine:
         start_time = time.perf_counter()
         result = await coroutine
         end_time = time.perf_counter()
         duration = end_time - start_time
         if self.enable_timing_metrics:
-            timing_guage.labels(self.hostname, coroutine.__name__).set(duration)
+            timing_gauge.labels(self.hostname, coroutine.__name__).set(duration)
         return result
 
     async def scrape(self, timeout: float) -> prometheus_client.CollectorRegistry:
@@ -368,7 +367,7 @@ class Switch(Item):
             await self._update_lldp_periodically()
 
         registry = prometheus_client.CollectorRegistry()
-        timing_guage = prometheus_client.Gauge(
+        timing_gauge = prometheus_client.Gauge(
             'switch_coroutine_duration_seconds', 'duration of the coroutine',
             labelnames=('hostname', 'coroutine'),
             registry=registry,
@@ -382,10 +381,11 @@ class Switch(Item):
             self._scrape_link_diagnostic_code(registry),
             self._scrape_transceiver_power(registry),
         ]
-        tasks = [asyncio.create_task(self.timed(s, timing_guage), name=s.__name__)
+        tasks = [asyncio.create_task(self.timed(s, timing_gauge), name=s.__name__)
                  for s in scrapers]
         timeout = timeout - (time.perf_counter() - start_time)
         done, pending = await asyncio.wait(tasks, timeout=timeout)
+        exceptions = []
         for task in pending:
             logger.error('[%s] Cancelling scraping metrics: %s', self.hostname, task.get_name())
             task.cancel()
@@ -393,10 +393,14 @@ class Switch(Item):
             try:
                 task.result()
             except Exception as e:
-                logger.error('[%s] Error scraping metrics: %s', self.hostname, e)
-                logger.error('[%s] Traceback: %s', self.hostname, traceback.format_exc())
-                raise
+                exceptions.append(e)
 
+        if exceptions:
+            ex = Exception(
+                "Error during scraping metrics: " + ', '.join([str(e) for e in exceptions])
+            )
+            logger.error(ex)
+            raise ex
         return registry
 
     @override
