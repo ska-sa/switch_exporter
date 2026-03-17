@@ -26,20 +26,21 @@ class Connection:
                 )
 
             logger.debug('Running command %s', command)
-            completed_process = await self.conn.run(command=None, input=command)
-            if completed_process.returncode != 0:
-                logger.error(
-                    '[%s] Error running command %s: return code %s',
-                    self.hostname, command, completed_process.returncode
-                )
-                logger.debug('[%s] Stdout: %s', self.hostname, completed_process.stdout)
-                logger.debug('[%s] Stderr: %s', self.hostname, completed_process.stderr)
-            return completed_process.stdout
+        completed_process = await self.conn.run(command=None, input=command)
+        if completed_process.returncode != 0:
+            logger.error(
+                '[%s] Error running command %s: return code %s',
+                self.hostname, command, completed_process.returncode
+            )
+            logger.debug('[%s] Stdout: %s', self.hostname, completed_process.stdout)
+            logger.debug('[%s] Stderr: %s', self.hostname, completed_process.stderr)
+        return completed_process.stdout
 
     async def close(self) -> None:
         async with self._lock:
             if self.conn is not None:
                 self.conn.close()
+                await self.conn.wait_closed()
                 self.conn = None
                 self.on_close()
 
