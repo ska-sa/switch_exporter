@@ -53,6 +53,7 @@ def make_app(args: argparse.Namespace) -> web.Application:
         connection_factory=connection_factory)
     app['cache'] = Cache(factory, args.connection_timeout)
     app['scrape_timeout'] = args.scrape_timeout
+    app['connection_factory'] = connection_factory
     app.router.add_get('/metrics', get_metrics)
     return app
 
