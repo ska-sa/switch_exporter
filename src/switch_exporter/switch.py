@@ -2,7 +2,6 @@ import logging
 import asyncio
 import re
 import time
-import traceback
 from typing import Any, Coroutine, Dict, List, Union
 from typing_extensions import override
 
@@ -164,8 +163,8 @@ class Switch(Item):
         # Split into (port, section) pairs based on a port header line.
         # This avoids relying on output ordering / line counts.
         results = _DIRECTED_PORT_RE.split(result)
-        assert (len(
-            results) - 1) // 4 == len(self.ports), f'found ports: {(len(results)-1) // 4}, expected: {len(self.ports)}'
+        assert (len(results) - 1) // 4 == len(self.ports), ''
+        + f'found ports: {(len(results)-1) // 4}, expected: {len(self.ports)}'
         for i in range(1, len(results) - 1, 2):
             direction = results[i]
             section = results[i + 1]
@@ -201,8 +200,8 @@ class Switch(Item):
         result = await self._run_command(r'show interfaces ethernet description')
         dummy_info = LLDPRemoteInfo()
         results = _PORT_RE.split(result)
-        assert (len(results) - 1) // 2 == len(
-            self.ports), f'found ports: {(len(results) - 1) // 2}, expected: {len(self.ports)}  in _scrape_state'
+        assert (len(results) - 1) // 2 == len(self.ports), ''
+        + f'found ports: {(len(results) - 1) // 2}, expected: {len(self.ports)}  in _scrape_state'
         for i in range(1, len(results) - 1, 2):
             port = results[i]
             section = results[i + 1].split()
@@ -245,8 +244,9 @@ class Switch(Item):
                     break
 
             port_operational_changes.labels(*labels).inc(count)
-        assert (len(results) - 1) // 2 == len(
-            self.ports), f'found ports: {(len(results) - 1) // 2}, expected: {len(self.ports)}  in _scrape_operational_changes'
+        assert (len(results) - 1) // 2 == len(self.ports), ''
+        + f'found ports: {(len(results) - 1) // 2}, '
+        + f'expected: {len(self.ports)}  in _scrape_operational_changes'
 
     async def _scrape_link_diagnostic_code(
         self,
@@ -346,7 +346,11 @@ class Switch(Item):
                 child.set(float(match.group(1)))
         # No assertions here because some switches don't support transceiver power
 
-    async def timed(self, coroutine: Coroutine[Any, Any, None], timing_gauge: prometheus_client.Gauge) -> None:
+    async def timed(
+        self,
+        coroutine: Coroutine[Any, Any, None],
+        timing_gauge: prometheus_client.Gauge
+    ) -> None:
         start_time = time.perf_counter()
         await coroutine
         end_time = time.perf_counter()

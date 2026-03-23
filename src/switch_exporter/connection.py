@@ -17,7 +17,11 @@ class Connection:
         """Get a process from the connection."""
         if self.conn is None:
             self.conn = await asyncssh.connect(
-                self.hostname, username=self.username, password=self.password, client_keys=self.keyfile, known_hosts=None
+                self.hostname,
+                username=self.username,
+                password=self.password,
+                client_keys=self.keyfile,
+                known_hosts=None
             )
 
         logger.debug('Running command %s', command)
