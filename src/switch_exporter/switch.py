@@ -2,20 +2,22 @@ import logging
 import asyncio
 import re
 import time
+import traceback
 from typing import Any, Coroutine, Dict, List, Union
 from typing_extensions import override
 
 import attr
 import prometheus_client
 
-from .connection_factory import ConnectionFactory, Connection
+from .connection import Connection
 
 from .cache import Cache, Item
 from . import metrics
 
 logger = logging.getLogger(__name__)
 
-_PORT_RE = re.compile(r'^Eth([^ :]*)(?: \(.*\))?:?$')
+_PORT_RE = re.compile(r'(?m)^Eth([^ :]*)(?: \(.*\))?:?')
+_DIRECTED_PORT_RE = re.compile(r'(?m)[Eth:?]?\s*^\s*(Rx|Tx):?\s+')
 _COUNTER_RE = re.compile(r'^(\d+) +(.*)$')
 _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subtype:)')
 _REMOTE_PORT_DESCRIPTION_RE = \
@@ -25,6 +27,7 @@ _OPERATIONAL_CHANGES_RE = \
     re.compile(r'(.*) \((\d+) oper change\)')
 _OPERATIONAL_CHANGES_NEVER_RE = re.compile(r'(.*)Never')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
+_DIAGNOSTIC_PORT_CODE_RE = re.compile(r'(?m)^\s*Eth([^ \t:]+).*?\s+(\d+)\s*.*$')
 _TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(
@@ -40,8 +43,6 @@ _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
     r'\s*Low Tx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
 _TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (.*) transceiver diagnostic data:')
-_LAST_LOGIN_RE = re.compile(r'\s*Last login: .*')
-_TOTAL_CONNECTIONS_SINCE_RE = re.compile(r'\s*Number of total successful connections since last .*')
 
 
 @attr.s(slots=True)
@@ -63,13 +64,15 @@ class Switch(Item):
         self,
         cache: Cache,
         hostname: str,
+        username: str,
+        password: str,
+        keyfile: str,
         lldp_timeout: float,
-        connection_factory: ConnectionFactory,
         enable_timing_metrics: bool = True,
     ) -> None:
         super().__init__(cache, hostname)
         self.ports = []               # type: List[str]
-        self.connection_factory = connection_factory
+        self.conn = Connection(hostname, username, password, keyfile)
         self.hostname = hostname
         self.lldp_info = {}           # type: Dict[str, LLDPRemoteInfo]
         self.lldp_time = 0.0          # time when LLDP info was last updated
@@ -81,18 +84,10 @@ class Switch(Item):
         return 'Switch({!r})'.format(self.hostname)
 
     async def _run_command(self, command: str) -> str:
-        result = await self.connection_factory.get_connection(self.hostname).run_process(command)
+        result = await self.conn.run_process(command)
         if not isinstance(result, str):
             raise TypeError(f'Expected str, got {type(result)}')
         return result
-
-    @staticmethod
-    def _remove_welcome_messages(lines: List[str]) -> List[str]:
-        if len(lines) > 0 and _LAST_LOGIN_RE.match(lines[0]):
-            lines = lines[1:]
-        if len(lines) > 0 and _TOTAL_CONNECTIONS_SINCE_RE.match(lines[0]):
-            lines = lines[1:]
-        return lines
 
     async def _populate_ports(self) -> None:
         """Populate the ports list"""
@@ -121,9 +116,9 @@ class Switch(Item):
             r'| include "^Eth|^ *Remote port description *:'
             r'|^ *Remote system name *:|^ *Remote port-id *:"'
         )
-        port = None
         info = LLDPRemoteInfo()
         new_lldp = {}
+
         for line in result.splitlines():
             line = line.strip()
             match = _PORT_RE.match(line)
@@ -156,36 +151,41 @@ class Switch(Item):
                 registry=registry
             )
 
-        cmd = [f'show interfaces ethernet {port} counters'
-               for port in self.ports]
+        # Run once, but ensure the output for each port is identifiable by port name.
+        cmd = [
+            (
+                f'show interfaces ethernet {port} counters'
+            )
+            for port in self.ports
+        ]
         result = await self._run_command('\n'.join(cmd))
-        cur_port = -1
-        direction = None
-        port = None
-        info = dummy_info = LLDPRemoteInfo()
-        lines = result.splitlines()
-        lines = self._remove_welcome_messages(lines)
+        dummy_info = LLDPRemoteInfo()
 
-        for line in lines:
-            line = line.strip()
-            # MLNX-OS omits the colon, Onyx includes it
-            if line in {'Rx', 'Rx:'}:
-                cur_port += 1
-                port = self.ports[cur_port]
-                info = self.lldp_info.get(port, dummy_info)
-            if line in {'Rx', 'Tx', 'Rx:', 'Tx:'}:
-                direction = line[:2].lower()
-            else:
+        port_number = 0
+        # Split into (port, section) pairs based on a port header line.
+        # This avoids relying on output ordering / line counts.
+        results = _DIRECTED_PORT_RE.split(result)
+        assert (len(
+            results) - 1) // 4 == len(self.ports), f'found ports: {(len(results)-1) // 4}, expected: {len(self.ports)}'
+        for i in range(1, len(results) - 1, 2):
+            direction = results[i]
+            section = results[i + 1]
+            if direction == 'Rx':
+                port_number += 1
+            port = self.ports[port_number - 1]
+            info = self.lldp_info.get(port, dummy_info)
+            for line in section.splitlines():
+                line = line.strip()
                 match = _COUNTER_RE.match(line)
-                if match and match.group(2) in metrics.COUNTERS:
+                if match and match.group(2) in metrics.COUNTERS and direction:
                     # To enable exact deltas, wrap every 2^53 so that
                     # there is no rounding in IEEE double precision.
                     count = int(match.group(1)) & (2**53 - 1)
                     name = match.group(2)
-                    labels = (port, direction, info.name,
-                              info.port_id, info.port_description)
+                    labels = (port, direction, info.name, info.port_id, info.port_description)
                     interface_counters[name].labels(*labels).inc(count)
-        assert cur_port == len(self.ports) - 1, f'cur_port: {cur_port}, ports: {len(self.ports)}'
+        assert len(results) == len(self.ports) * 4 + \
+            1, f'found ports: {results}, expected: {len(self.ports) * 4 + 1} in _scrape_counters'
 
     async def _scrape_state(self, registry: prometheus_client.CollectorRegistry) -> None:
         _state_labelnames = ('port', 'remote_name', 'remote_port_id', 'remote_port_description')
@@ -201,15 +201,16 @@ class Switch(Item):
         )
         result = await self._run_command(r'show interfaces ethernet description')
         dummy_info = LLDPRemoteInfo()
-        for line in result.splitlines():
-            line = line.strip()
-            if line.startswith('Eth'):
-                fields = line.split()
-                port = fields[0][3:]
-                info = self.lldp_info.get(port, dummy_info)
-                labels = (port, info.name, info.port_id, info.port_description)
-                port_enabled.labels(*labels).set(int(fields[1] == 'Enabled'))
-                port_up.labels(*labels).set(int(fields[2] == 'Up'))
+        results = _PORT_RE.split(result)
+        assert (len(results) - 1) // 2 == len(
+            self.ports), f'found ports: {(len(results) - 1) // 2}, expected: {len(self.ports)}  in _scrape_state'
+        for i in range(1, len(results) - 1, 2):
+            port = results[i]
+            section = results[i + 1].split()
+            info = self.lldp_info.get(port, dummy_info)
+            labels = (port, info.name, info.port_id, info.port_description)
+            port_enabled.labels(*labels).set(int(section[1] == 'Enabled'))
+            port_up.labels(*labels).set(int(section[2] == 'Up'))
 
     async def _scrape_operational_changes(
         self,
@@ -222,61 +223,53 @@ class Switch(Item):
             registry=registry
         )
 
-        cmd = r'show interfaces ethernet | include "^\s+Last change in operational status: "'
+        # Include the port header lines so we can associate each result with its port.
+        cmd = (
+            r'show interfaces ethernet '
+            r'| include "^Eth|^\s+Last change in operational status: |^"'
+        )
         result = await self._run_command(cmd)
-        # for some reason the output may have the first line as a welcome message even after
-        # applying the include filter
-        lines = self._remove_welcome_messages(result.splitlines())
-        assert len(lines) == len(self.ports), f'lines: {len(lines)}, ports: {len(self.ports)}'
-        cur_port = -1
-        for line in lines:
-            cur_port += 1
-            port = self.ports[cur_port]
+        results = _PORT_RE.split(result)
+        for i in range(1, len(results) - 1, 2):
+            port = results[i]
+            section = results[i + 1]
             info = self.lldp_info.get(port, LLDPRemoteInfo())
             labels = (port, info.name, info.port_id, info.port_description)
-            match = _OPERATIONAL_CHANGES_RE.match(line)
-            if match:
-                port_operational_changes.labels(*labels).inc(int(match.group(2)))
-            else:
-                if not _OPERATIONAL_CHANGES_NEVER_RE.match(line):
-                    logger.warning('Unexpected line in show interfaces ethernet: %s', line)
-                port_operational_changes.labels(*labels).inc(0)
+
+            # Find the single operational status change line in this section.
+            count = 0
+            for line in section.splitlines():
+                line = line.strip()
+                match = _OPERATIONAL_CHANGES_RE.match(line)
+                if match:
+                    count = int(match.group(2))
+                    break
+
+            port_operational_changes.labels(*labels).inc(count)
+        assert (len(results) - 1) // 2 == len(
+            self.ports), f'found ports: {(len(results) - 1) // 2}, expected: {len(self.ports)}  in _scrape_operational_changes'
 
     async def _scrape_link_diagnostic_code(
         self,
         registry: prometheus_client.CollectorRegistry
     ) -> None:
         _state_labelnames = ('port', 'remote_name', 'remote_port_id', 'remote_port_description')
-        port_link_diagnostic_state = prometheus_client.Gauge(
-            'switch_port_link_diagnostic_state', 'state of the link',
+        port_link_diagnostic_code = prometheus_client.Gauge(
+            'switch_port_link_diagnostic_code', 'state of the link',
             labelnames=_state_labelnames,
             registry=registry
         )
 
         cmd = r'show interfaces ethernet link-diagnostics | include "^\s+Eth"'
         result = await self._run_command(cmd)
-        lines = result.splitlines()
-        # for some reasone the output may have the first line as a welcome message even after
-        # applying the include filter
-        lines = self._remove_welcome_messages(result.splitlines())
-
-        cur_port = -1
-        for line in lines:
-            cur_port += 1
-            if cur_port >= len(self.ports):
-                logger.debug('cur_port: %s, ports: %s', cur_port, self.ports)
-                logger.debug('line: %s', line)
-                logger.debug('result: %s', result)
-            port = self.ports[cur_port]
-            line = line.strip()
+        for match in _DIAGNOSTIC_PORT_CODE_RE.finditer(result):
+            port = match.group(1)
+            if port not in self.ports:
+                continue
             info = self.lldp_info.get(port, LLDPRemoteInfo())
             labels = (port, info.name, info.port_id, info.port_description)
-            match = _DIAGNOSTIC_CODE_RE.match(line)
-            if match:
-                port_link_diagnostic_state.labels(*labels).set(int(match.group(1)))
-            else:
-                logger.warning(
-                    'Unexpected line in show interfaces ethernet link-diagnostics: %s', line)
+            port_link_diagnostic_code.labels(*labels).set(int(match.group(2)))
+        # No assertions here because some switches don't support link diagnostics
 
     async def _scrape_transceiver_power(
         self,
@@ -352,6 +345,7 @@ class Switch(Item):
             if match:
                 child = port_transceiver_low_power_alarm_threshold.labels(*labels, 'tx')
                 child.set(float(match.group(1)))
+        # No assertions here because some switches don't support transceiver power
 
     async def timed(self, coroutine: Coroutine[Any, Any, None], timing_gauge: prometheus_client.Gauge) -> None:
         start_time = time.perf_counter()
@@ -389,22 +383,22 @@ class Switch(Item):
         done, pending = await asyncio.wait(tasks, timeout=timeout)
         exceptions = []
         for task in pending:
-            logger.error('[%s] Cancelling scraping metrics: %s', self.hostname, task.get_name())
+            logger.error('[%s] Cancelling scraping metrics: %s after %s seconds',
+                         self.hostname, task.get_name(), timeout)
             task.cancel()
         for task in done:
             try:
                 task.result()
             except Exception as e:
+                logger.error('Error during scraping metrics: %s', task.get_name())
                 exceptions.append(e)
 
         if exceptions:
-            ex = Exception(
+            raise Exception(
                 "Error during scraping metrics: " + ', '.join([str(e) for e in exceptions])
             )
-            logger.error(ex)
-            raise ex
         return registry
 
     @override
     async def close(self) -> None:
-        await self.connection_factory.get_connection(self.hostname).close()
+        await self.conn.close()

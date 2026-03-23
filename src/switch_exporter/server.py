@@ -8,15 +8,12 @@ import katsdpservices
 from aiohttp import web
 import prometheus_client
 
-from .connection_factory import ConnectionFactory
-
 from .switch import Switch
 from .cache import Cache
 
 
 #: Time to keep SSH connections open
 CONNECTION_TIMEOUT = 120
-SCRAPE_TIMEOUT = 5
 
 
 async def get_metrics(request: web.Request) -> web.Response:
@@ -46,14 +43,15 @@ async def get_metrics(request: web.Request) -> web.Response:
 
 def make_app(args: argparse.Namespace) -> web.Application:
     app = web.Application()
-    connection_factory = ConnectionFactory(args.username, args.password, args.keyfile)
     factory = functools.partial(
         Switch,
+        username=args.username,
+        password=args.password,
+        keyfile=args.keyfile,
         lldp_timeout=args.lldp_timeout,
-        connection_factory=connection_factory)
+    )
     app['cache'] = Cache(factory, args.connection_timeout)
     app['scrape_timeout'] = args.scrape_timeout
-    app['connection_factory'] = connection_factory
     app.router.add_get('/metrics', get_metrics)
     return app
 
