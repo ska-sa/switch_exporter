@@ -167,9 +167,9 @@ class Switch(Item):
             f'found ports: {(len(results)-1) // 4}, expected: {len(self.ports)}'
         )
         for i in range(1, len(results) - 1, 2):
-            direction = results[i]
+            direction = results[i].lower()
             section = results[i + 1]
-            if direction == 'Rx':
+            if direction == 'rx':
                 port_number += 1
             port = self.ports[port_number - 1]
             info = self.lldp_info.get(port, dummy_info)
