@@ -151,21 +151,15 @@ class Switch(Item):
 
         # Run once, but ensure the output for each port is identifiable by port name.
         cmd = [
-            (
-                f'show interfaces ethernet {port} counters'
-            )
+            f'show interfaces ethernet {port} counters'
             for port in self.ports
         ]
         result = await self._run_command('\n'.join(cmd))
         dummy_info = LLDPRemoteInfo()
 
         port_number = 0
-        # Split into (port, section) pairs based on a port header line.
-        # This avoids relying on output ordering / line counts.
+        # Split into (direction, section) pairs based on a header line.
         results = _DIRECTED_PORT_RE.split(result)
-        assert (len(results) - 1) // 4 == len(self.ports), (
-            f'found ports: {(len(results)-1) // 4}, expected: {len(self.ports)}'
-        )
         for i in range(1, len(results) - 1, 2):
             direction = results[i].lower()
             section = results[i + 1]
@@ -176,7 +170,7 @@ class Switch(Item):
             for line in section.splitlines():
                 line = line.strip()
                 match = _COUNTER_RE.match(line)
-                if match and match.group(2) in metrics.COUNTERS and direction:
+                if match and match.group(2) in metrics.COUNTERS:
                     # To enable exact deltas, wrap every 2^53 so that
                     # there is no rounding in IEEE double precision.
                     count = int(match.group(1)) & (2**53 - 1)
