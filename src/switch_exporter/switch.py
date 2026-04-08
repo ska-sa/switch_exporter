@@ -25,7 +25,7 @@ _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
 _OPERATIONAL_CHANGES_RE = \
     re.compile(r'(.*) \((\d+) oper change\)')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
-_DIAGNOSTIC_PORT_CODE_RE = re.compile(r'(?m)^\s*Eth([^ \t:]+).*?\s+(\d+)\s*.*$')
+_DIAGNOSTIC_PORT_CODE_RE = re.compile(r'(?m)^\s*Eth([^ \t:]+).*?\s+(\d+).*$')
 _TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(
@@ -91,7 +91,7 @@ class Switch(Item):
         """Populate the ports list"""
         if self.ports != []:  # ports are already populated
             return
-        result = await self._run_command(r'show interfaces ethernet status')
+        result = await self._run_command('show interfaces ethernet status')
         for line in result.splitlines():
             fields = line.split()
             if not fields:
@@ -110,9 +110,9 @@ class Switch(Item):
     async def _update_lldp(self) -> None:
         logger.info('Updating LLDP information for %s', self.hostname)
         result = await self._run_command(
-            r'show lldp interfaces ethernet remote '
-            r'| include "^Eth|^ *Remote port description *:'
-            r'|^ *Remote system name *:|^ *Remote port-id *:"'
+            'show lldp interfaces ethernet remote '
+            '| include "^Eth|^ *Remote port description *:'
+            '|^ *Remote system name *:|^ *Remote port-id *:"'
         )
         info = LLDPRemoteInfo()
         new_lldp = {}
