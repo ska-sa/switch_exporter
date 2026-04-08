@@ -21,7 +21,7 @@ class Connection:
         self.connection = asyncio.Lock()
 
     async def run_process(self, command: str) -> str:
-        """Get a process from the connection, create a connection if it doesn't exist.
+        """Run a command and return the output, create a connection if it doesn't exist.
 
         This function is reentrant, so it can be called from multiple coroutines.
         """
