@@ -2,7 +2,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import Any, Coroutine, Dict, List, Union
+from typing import Any, Callable, Coroutine, Dict, List, Union
 from typing_extensions import override
 
 import attr
@@ -48,6 +48,13 @@ class LLDPRemoteInfo:
     name = attr.ib(type=str, default='')
     port_id = attr.ib(type=str, default='')
     port_description = attr.ib(type=str, default='')
+
+
+def split_aggregate_or_raise_error(results: str, split_func: Callable[[str], List[str]], expected: int) -> List[str]:
+    data = split_func(results)
+    if len(data) != expected:
+        raise RuntimeError(f'found {len(data)} entries, expected: {expected}')
+    return data
 
 
 class Switch(Item):
@@ -159,7 +166,8 @@ class Switch(Item):
 
         port_number = 0
         # Split into (direction, section) pairs based on a header line.
-        results = _DIRECTED_PORT_RE.split(result)
+        results = split_aggregate_or_raise_error(result, lambda x: _DIRECTED_PORT_RE.split(x), len(self.ports) * 4 + 1)
+
         for i in range(1, len(results) - 1, 2):
             direction = results[i].lower()
             section = results[i + 1]
@@ -177,8 +185,6 @@ class Switch(Item):
                     name = match.group(2)
                     labels = (port, direction, info.name, info.port_id, info.port_description)
                     interface_counters[name].labels(*labels).inc(count)
-        assert len(results) == len(self.ports) * 4 + \
-            1, f'found ports: {results}, expected: {len(self.ports) * 4 + 1} in _scrape_counters'
 
     async def _scrape_state(self, registry: prometheus_client.CollectorRegistry) -> None:
         _state_labelnames = ('port', 'remote_name', 'remote_port_id', 'remote_port_description')
@@ -194,11 +200,7 @@ class Switch(Item):
         )
         result = await self._run_command(r'show interfaces ethernet description')
         dummy_info = LLDPRemoteInfo()
-        results = _PORT_RE.split(result)
-        assert (len(results) - 1) // 2 == len(self.ports), (
-            f'found ports: {(len(results) - 1) // 2}, expected: {len(self.ports)}'
-            ' in _scrape_state'
-        )
+        results = split_aggregate_or_raise_error(result, lambda x: _PORT_RE.split(x), len(self.ports) * 2 + 1)
         for i in range(1, len(results) - 1, 2):
             port = results[i]
             section = results[i + 1].split()
@@ -224,7 +226,7 @@ class Switch(Item):
             r'| include "^Eth|^\s+Last change in operational status: |^"'
         )
         result = await self._run_command(cmd)
-        results = _PORT_RE.split(result)
+        results = split_aggregate_or_raise_error(result, lambda x: _PORT_RE.split(x), len(self.ports) * 2 + 1)
         for i in range(1, len(results) - 1, 2):
             port = results[i]
             section = results[i + 1]
@@ -241,10 +243,6 @@ class Switch(Item):
                     break
 
             port_operational_changes.labels(*labels).inc(count)
-        assert (len(results) - 1) // 2 == len(self.ports), (
-            f'found ports: {(len(results) - 1) // 2}, '
-            f'expected: {len(self.ports)} in _scrape_operational_changes'
-        )
 
     async def _scrape_link_diagnostic_code(
         self,
