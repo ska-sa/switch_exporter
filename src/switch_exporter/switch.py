@@ -2,7 +2,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import Any, Callable, Coroutine, Dict, List, Union
+from typing import Any, Coroutine, Dict, Generator, List, Tuple, Union
 from typing_extensions import override
 
 import attr
@@ -50,11 +50,12 @@ class LLDPRemoteInfo:
     port_description = attr.ib(type=str, default='')
 
 
-def split_aggregate_or_raise_error(results: str, split_func: Callable[[str], List[str]], expected: int) -> List[str]:
-    data = split_func(results)
-    if len(data) != expected:
-        raise RuntimeError(f'found {len(data)} entries, expected: {expected}')
-    return data
+def split_aggregate_or_raise_error(results: str, regex: re.Pattern[str], expected_pairs: int) -> Generator[Tuple[str, str], None, None]:
+    data = regex.split(results)
+    if len(data) != expected_pairs * 2 + 1:
+        raise RuntimeError(f'found {len(data)} total entries, expected {expected_pairs} pairs and one header line')
+    for i in range(1, len(data) - 1, 2):
+        yield data[i], data[i + 1]
 
 
 class Switch(Item):
@@ -166,11 +167,10 @@ class Switch(Item):
 
         port_number = 0
         # Split into (direction, section) pairs based on a header line.
-        results = split_aggregate_or_raise_error(result, lambda x: _DIRECTED_PORT_RE.split(x), len(self.ports) * 4 + 1)
+        results = split_aggregate_or_raise_error(result, _DIRECTED_PORT_RE, len(self.ports) * 2)
 
-        for i in range(1, len(results) - 1, 2):
-            direction = results[i].lower()
-            section = results[i + 1]
+        for direction, section in results:
+            direction = direction.lower()
             if direction == 'rx':
                 port_number += 1
             port = self.ports[port_number - 1]
@@ -200,14 +200,13 @@ class Switch(Item):
         )
         result = await self._run_command(r'show interfaces ethernet description')
         dummy_info = LLDPRemoteInfo()
-        results = split_aggregate_or_raise_error(result, lambda x: _PORT_RE.split(x), len(self.ports) * 2 + 1)
-        for i in range(1, len(results) - 1, 2):
-            port = results[i]
-            section = results[i + 1].split()
+        results = split_aggregate_or_raise_error(result, _PORT_RE, len(self.ports))
+        for port, section in results:
+            sections = section.split()
             info = self.lldp_info.get(port, dummy_info)
             labels = (port, info.name, info.port_id, info.port_description)
-            port_enabled.labels(*labels).set(int(section[1] == 'Enabled'))
-            port_up.labels(*labels).set(int(section[2] == 'Up'))
+            port_enabled.labels(*labels).set(int(sections[1] == 'Enabled'))
+            port_up.labels(*labels).set(int(sections[2] == 'Up'))
 
     async def _scrape_operational_changes(
         self,
@@ -226,10 +225,8 @@ class Switch(Item):
             r'| include "^Eth|^\s+Last change in operational status: |^"'
         )
         result = await self._run_command(cmd)
-        results = split_aggregate_or_raise_error(result, lambda x: _PORT_RE.split(x), len(self.ports) * 2 + 1)
-        for i in range(1, len(results) - 1, 2):
-            port = results[i]
-            section = results[i + 1]
+        results = split_aggregate_or_raise_error(result, _PORT_RE, len(self.ports))
+        for port, section in results:
             info = self.lldp_info.get(port, LLDPRemoteInfo())
             labels = (port, info.name, info.port_id, info.port_description)
 

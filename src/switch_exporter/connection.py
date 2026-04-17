@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Union
+from typing import Optional
 
 import asyncssh
 logger = logging.getLogger(__name__)
@@ -17,15 +17,15 @@ class Connection:
         self.username = username
         self.password = password
         self.keyfile = keyfile
-        self.conn: Union[asyncssh.SSHClientConnection, None] = None
-        self.connection = asyncio.Lock()
+        self.conn: Optional[asyncssh.SSHClientConnection] = None
+        self.conn_lock = asyncio.Lock()
 
     async def run_process(self, command: str) -> str:
         """Run a command and return the output, create a connection if it doesn't exist.
 
         This function is reentrant, so it can be called from multiple coroutines.
         """
-        async with self.connection:
+        async with self.conn_lock:
             if self.conn is None:
                 self.conn = await asyncssh.connect(
                     self.hostname,
