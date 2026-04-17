@@ -2,7 +2,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import Any, Coroutine, Dict, Generator, List, Tuple, Union
+from typing import Any, Coroutine, Generator, Tuple
 from typing_extensions import override
 
 import attr
@@ -50,18 +50,23 @@ class LLDPRemoteInfo:
     port_description = attr.ib(type=str, default='')
 
 
-def split_aggregate_or_raise_error(results: str, regex: re.Pattern[str], expected_pairs: int) -> Generator[Tuple[str, str], None, None]:
+def split_aggregate_or_raise_error(
+    results: str,
+    regex: re.Pattern[str],
+    expected_pairs: int,
+) -> Generator[Tuple[str, str], None, None]:
     """
     Split the results into pairs of (matched_part, section_before_next_match).
 
     When using re.split() with capturing groups, the result alternates:
     [text_before_first_match, captured_group_1, text_after_match_1, captured_group_2,
     text_after_match_2, ...]
-    Skip the first element (text before any match), then iterate in pairs: (matched_part, section_before_next_match)
+    Skip the first element (text before any match), then iterate in pairs
 
     Returns
     -------
-        Generator[Tuple[str, str], None, None]: A generator of pairs of (matched_part, section_before_next_match).
+        Generator[Tuple[str, str], None, None]: A generator of pairs of
+           ``(matched_part, section_before_next_match)``.
 
     Raises
     ------
@@ -69,18 +74,24 @@ def split_aggregate_or_raise_error(results: str, regex: re.Pattern[str], expecte
     """
     data = regex.split(results)
     if len(data) != expected_pairs * 2 + 1:
-        raise RuntimeError(f'found {len(data)} total entries, expected {expected_pairs} pairs and one header line')
+        raise RuntimeError(
+            f'found {len(data)} total entries, expected {expected_pairs} pairs and one header line')
     for i in range(1, len(data) - 1, 2):
         yield data[i], data[i + 1]
 
 
-def split_aggregate(results: str, regex: re.Pattern[str]) -> Generator[Tuple[str, str], None, None]:
+def split_aggregate(
+    results: str,
+    regex: re.Pattern[str],
+) -> Generator[Tuple[str, str], None, None]:
     """
-    Similar to :meth:`split_aggregate_or_raise_error` but doesn't raise an error if the number of entries doesn't match the expected number of pairs.
+    Similar to :meth:`split_aggregate_or_raise_error` but doesn't raise an error if the number of
+    entries doesn't match the expected number of pairs.
 
     Returns
     -------
-        Generator[Tuple[str, str], None, None]: A generator of pairs of (matched_part, section_before_next_match).
+        Generator[Tuple[str, str], None, None]: A generator of pairs of
+           ``(matched_part, section_before_next_match)``.
     """
     data = regex.split(results)
     for i in range(1, len(data) - 1, 2):
@@ -195,7 +206,10 @@ class Switch(Item):
         dummy_info = LLDPRemoteInfo()
 
         port_number = 0
-        for direction, section in split_aggregate_or_raise_error(result, _DIRECTED_PORT_RE, len(self.ports) * 2):
+        for direction, section in split_aggregate_or_raise_error(
+            result,
+            _DIRECTED_PORT_RE, len(self.ports) * 2
+        ):
             direction = direction.lower()
             if direction == 'rx':
                 port_number += 1
