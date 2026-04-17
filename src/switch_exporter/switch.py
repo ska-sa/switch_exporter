@@ -117,10 +117,10 @@ class Switch(Item):
         enable_timing_metrics: bool = True,
     ) -> None:
         super().__init__(cache, hostname)
-        self.ports = []               # type: List[str]
+        self.ports = []
         self.conn = Connection(hostname, username, password, keyfile)
         self.hostname = hostname
-        self.lldp_info = {}           # type: Dict[str, LLDPRemoteInfo]
+        self.lldp_info = {}
         self.lldp_time = 0.0          # time when LLDP info was last updated
         self.lldp_timeout = lldp_timeout
         self._lock = asyncio.Lock()   # Serialises port and lldp info
@@ -340,7 +340,7 @@ class Switch(Item):
             labels = (port, info.name, info.port_id, info.port_description)
 
             matches = _TRANSCEIVER_POWER_RX_RE.finditer(section)
-            match = None  # type: Union[re.Match[str], None]
+            match = None
             for match in matches:
                 child = port_transceiver_power.labels(*labels, match.group(1), 'rx')
                 child.set(float(match.group(2)))
