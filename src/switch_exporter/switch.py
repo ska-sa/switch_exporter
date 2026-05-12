@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 import logging
 import asyncio
 import re
@@ -16,7 +17,7 @@ from . import metrics
 logger = logging.getLogger(__name__)
 
 _PORT_RE = re.compile(r'(?m)^Eth([^ :]*)(?: \(.*\))?:?')
-_DIRECTED_PORT_RE = re.compile(r'(?m)[Eth:?]?\s*^\s*(Rx|Tx):?\s+')
+_DIRECTED_PORT_RE = re.compile(r'(?m)(?:Eth:)?\s*^\s*(Rx|Tx):?\s+')
 _COUNTER_RE = re.compile(r'^(\d+) +(.*)$')
 _REMOTE_PORT_ID_RE = re.compile(r'^Remote port-id *: ([^;]+)(?:$| ; port id subtype:)')
 _REMOTE_PORT_DESCRIPTION_RE = \
@@ -50,11 +51,11 @@ class LLDPRemoteInfo:
     port_description = attr.ib(type=str, default='')
 
 
-def split_aggregate_or_raise_error(
+def split_aggregate(
     results: str,
     regex: re.Pattern[str],
-    expected_pairs: int,
-) -> Generator[Tuple[str, str], None, None]:
+    expected_pairs: int = None,
+) -> Iterable[Tuple[str, str]]:
     """
     Split the results into pairs of (matched_part, section_before_next_match).
 
@@ -65,35 +66,18 @@ def split_aggregate_or_raise_error(
 
     Returns
     -------
-        Generator[Tuple[str, str], None, None]: A generator of pairs of
-           ``(matched_part, section_before_next_match)``.
+    Generator[Tuple[str, str], None, None]
+        A generator of pairs of ``(matched_part, section_before_next_match)``.
 
     Raises
     ------
-        RuntimeError: If the number of entries doesn't match the expected number of pairs.
+    RuntimeError
+        If the number of entries doesn't match the expected number of pairs.
     """
     data = regex.split(results)
-    if len(data) != expected_pairs * 2 + 1:
+    if expected_pairs and len(data) != expected_pairs * 2 + 1:
         raise RuntimeError(
             f'found {len(data)} total entries, expected {expected_pairs} pairs and one header line')
-    for i in range(1, len(data) - 1, 2):
-        yield data[i], data[i + 1]
-
-
-def split_aggregate(
-    results: str,
-    regex: re.Pattern[str],
-) -> Generator[Tuple[str, str], None, None]:
-    """
-    Similar to :meth:`split_aggregate_or_raise_error` but doesn't raise an error if the number of
-    entries doesn't match the expected number of pairs.
-
-    Returns
-    -------
-        Generator[Tuple[str, str], None, None]: A generator of pairs of
-           ``(matched_part, section_before_next_match)``.
-    """
-    data = regex.split(results)
     for i in range(1, len(data) - 1, 2):
         yield data[i], data[i + 1]
 
@@ -206,9 +190,10 @@ class Switch(Item):
         dummy_info = LLDPRemoteInfo()
 
         port_number = 0
-        for direction, section in split_aggregate_or_raise_error(
+        for direction, section in split_aggregate(
             result,
-            _DIRECTED_PORT_RE, len(self.ports) * 2
+            _DIRECTED_PORT_RE,
+            len(self.ports) * 2
         ):
             direction = direction.lower()
             if direction == 'rx':
@@ -240,7 +225,7 @@ class Switch(Item):
         )
         result = await self._run_command(r'show interfaces ethernet description')
         dummy_info = LLDPRemoteInfo()
-        results = split_aggregate_or_raise_error(result, _PORT_RE, len(self.ports))
+        results = split_aggregate(result, _PORT_RE, len(self.ports))
         for port, section in results:
             sections = section.split()
             info = self.lldp_info.get(port, dummy_info)
@@ -265,7 +250,7 @@ class Switch(Item):
             r'| include "^Eth|^\s+Last change in operational status: |^"'
         )
         result = await self._run_command(cmd)
-        for port, section in split_aggregate_or_raise_error(result, _PORT_RE, len(self.ports)):
+        for port, section in split_aggregate(result, _PORT_RE, len(self.ports)):
             info = self.lldp_info.get(port, LLDPRemoteInfo())
             labels = (port, info.name, info.port_id, info.port_description)
 
