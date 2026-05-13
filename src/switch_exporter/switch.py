@@ -1,9 +1,8 @@
-from collections.abc import Iterable
 import logging
 import asyncio
 import re
 import time
-from typing import Any, Coroutine, Optional, Pattern, Tuple
+from typing import Any, Coroutine, Iterable, Optional, Pattern, Tuple
 from typing_extensions import override
 
 import attr
