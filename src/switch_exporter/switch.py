@@ -3,7 +3,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import Any, Coroutine, Generator, Tuple
+from typing import Any, Coroutine, Optional, Pattern, Tuple
 from typing_extensions import override
 
 import attr
@@ -53,8 +53,8 @@ class LLDPRemoteInfo:
 
 def split_aggregate(
     results: str,
-    regex: re.Pattern[str],
-    expected_pairs: int = None,
+    regex: Pattern[str],
+    expected_pairs: Optional[int] = None,
 ) -> Iterable[Tuple[str, str]]:
     """
     Split the results into pairs of (matched_part, section_before_next_match).
