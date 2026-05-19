@@ -65,7 +65,7 @@ def split_aggregate(
 
     Returns
     -------
-    Generator[Tuple[str, str], None, None]
+    Iterable[Tuple[str, str]]
         A generator of pairs of ``(matched_part, section_before_next_match)``.
 
     Raises
