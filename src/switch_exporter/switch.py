@@ -66,7 +66,7 @@ def split_aggregate(
     Returns
     -------
     Iterable[Tuple[str, str]]
-        A iterator of pairs of ``(matched_part, section_before_next_match)``.
+        An iterator of pairs of ``(matched_part, section_before_next_match)``.
 
     Raises
     ------
