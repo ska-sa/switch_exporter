@@ -74,7 +74,7 @@ def split_aggregate(
         If the number of entries doesn't match the expected number of pairs.
     """
     data = regex.split(results)
-    if expected_pairs and len(data) != expected_pairs * 2 + 1:
+    if expected_pairs is not None and len(data) != expected_pairs * 2 + 1:
         raise RuntimeError(
             f'found {len(data)} total entries, expected {expected_pairs} pairs and one header line')
     for i in range(1, len(data) - 1, 2):
