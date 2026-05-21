@@ -24,6 +24,7 @@ class Item(Generic[_T]):
     :meth:`close`. It should not be constructed directly; use
     :meth:`.Cache.get` instead.
     """
+
     def __init__(self, cache: 'Cache', key: _T) -> None:
         self._cache = cache
         self._users = 0

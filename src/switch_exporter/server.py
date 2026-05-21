@@ -6,7 +6,6 @@ import logging
 
 import katsdpservices
 from aiohttp import web
-import async_timeout
 import prometheus_client
 
 from .switch import Switch
@@ -15,7 +14,6 @@ from .cache import Cache
 
 #: Time to keep SSH connections open
 CONNECTION_TIMEOUT = 120
-SCRAPE_TIMEOUT = 5
 
 
 async def get_metrics(request: web.Request) -> web.Response:
@@ -27,8 +25,8 @@ async def get_metrics(request: web.Request) -> web.Response:
     switch = cache.get(target)
     timeout = request.app['scrape_timeout']
     try:
-        with async_timeout.timeout(timeout), switch:
-            counters = await switch.scrape()
+        with switch:
+            counters = await switch.scrape(timeout)
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:
@@ -47,10 +45,11 @@ def make_app(args: argparse.Namespace) -> web.Application:
     app = web.Application()
     factory = functools.partial(
         Switch,
-        lldp_timeout=args.lldp_timeout,
         username=args.username,
         password=args.password,
-        keyfile=args.keyfile)
+        keyfile=args.keyfile,
+        lldp_timeout=args.lldp_timeout,
+    )
     app['cache'] = Cache(factory, args.connection_timeout)
     app['scrape_timeout'] = args.scrape_timeout
     app.router.add_get('/metrics', get_metrics)
@@ -72,7 +71,7 @@ def get_arguments() -> argparse.Namespace:
         '--connection-timeout', type=float, default=120.0, metavar='SECONDS',
         help='Time to cache open SSH connections [%(default)s]')
     parser.add_argument(
-        '--scrape-timeout', type=float, default=8.0, metavar='SECONDS',
+        '--scrape-timeout', type=float, default=10.0, metavar='SECONDS',
         help='Timeout to obtain data from a switch [%(default)s]')
     parser.add_argument(
         '--lldp-timeout', type=float, default=300.0, metavar='SECONDS',
