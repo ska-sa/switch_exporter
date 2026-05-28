@@ -21,12 +21,18 @@ async def get_metrics(request: web.Request) -> web.Response:
         target = request.query['target']
     except KeyError:
         raise web.HTTPBadRequest(text='target parameter omitted')
+
+    collect = request.query.getall('collect', None)
     cache = request.app['cache']
     switch = cache.get(target)
     timeout = request.app['scrape_timeout']
     try:
+        timeout = int(request.query.get('scrape_timeout', timeout))
+    except ValueError:
+        raise web.HTTPBadRequest(text='scrape_timeout must be an integer')
+    try:
         with switch:
-            counters = await switch.scrape(timeout)
+            counters = await switch.scrape(timeout, collect)
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:
