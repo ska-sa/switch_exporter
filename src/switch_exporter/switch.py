@@ -2,7 +2,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import Any, Coroutine, Iterable, Optional, Pattern, Tuple
+from typing import Any, Coroutine, Iterable, List, Optional, Pattern, Tuple
 from typing_extensions import override
 
 import attr
@@ -377,7 +377,7 @@ class Switch(Item):
     async def scrape(
         self,
         timeout: float,
-        collectors: Optional[list[str]]
+        collectors: Optional[List[str]]
     ) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
