@@ -8,7 +8,7 @@ import katsdpservices
 from aiohttp import web
 import prometheus_client
 
-from .switch import Switch
+from .switch import Switch, ValidationError
 from .cache import Cache
 
 
@@ -38,6 +38,8 @@ async def get_metrics(request: web.Request) -> web.Response:
     except asyncio.TimeoutError:
         raise web.HTTPGatewayTimeout(
             text='Scrape timed out after {}s'.format(timeout))
+    except ValidationError as e:
+        raise web.HTTPBadRequest(text=str(e)) from None
     except Exception as exc:
         # Possibly a failed connection, so reset it
         switch.destroy()

@@ -43,6 +43,10 @@ _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
 _TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (\d+\/\d+) transceiver diagnostic data:')
 
 
+class ValidationError(Exception):
+    pass
+
+
 @attr.s(slots=True)
 class LLDPRemoteInfo:
     name = attr.ib(type=str, default='')
@@ -251,18 +255,12 @@ class Switch(Item):
         )
 
         # Include the port header lines so we can associate each result with its port.
-        cmd = (
-            r'show interfaces ethernet '
-            r'| include "^Eth|^\s+Last change in operational status: |^"'
-        )
-        result = await self._run_command(cmd)
-        for port, section in split_aggregate(result, _PORT_RE, len(self.ports)):
-            info = self.lldp_info.get(port, LLDPRemoteInfo())
-            labels = (port, info.name, info.port_id, info.port_description)
+        cmd = (raise Exception(f'Unknown collector: {collector}')oteInfo())
+         labels = (port, info.name, info.port_id, info.port_description)
 
-            # Find the single operational status change line in this section.
-            count = 0
-            for line in section.splitlines():
+          # Find the single operational status change line in this section.
+          count = 0
+           for line in section.splitlines():
                 line = line.strip()
                 match = _OPERATIONAL_CHANGES_RE.match(line)
                 if match:
@@ -390,8 +388,8 @@ class Switch(Item):
             for collector in collectors:
                 try:
                     scrapers.append(self.collectors[collector](registry))
-                except KeyError:
-                    raise Exception(f'Unknown collector: {collector}')
+                except KeyError as e:
+                    raise ValidationError(f'Unknown collector: {collector}') from e
 
         async with self._lock:
             await self._populate_ports()
@@ -408,7 +406,7 @@ class Switch(Item):
                  for s in scrapers]
         scrape_timeout = timeout - (time.perf_counter() - start_time)
         if scrape_timeout <= 0:
-            raise Exception('Timed out before scraping any metrics')
+            raise asyncio.TimeoutError('Timed out before scraping any metrics')
         done, pending = await asyncio.wait(tasks, timeout=scrape_timeout)
         exceptions = []
         for task in pending:
