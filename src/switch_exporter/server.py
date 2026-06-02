@@ -14,6 +14,7 @@ from .cache import Cache
 
 #: Time to keep SSH connections open
 CONNECTION_TIMEOUT = 120
+logger = logging.getLogger(__name__)
 
 
 async def get_metrics(request: web.Request) -> web.Response:
@@ -29,21 +30,26 @@ async def get_metrics(request: web.Request) -> web.Response:
     try:
         timeout = int(request.query.get('scrape_timeout', timeout))
     except ValueError:
-        raise web.HTTPBadRequest(text='scrape_timeout must be an integer')
+        logger.exception('Invalid scrape_timeout value')
+        raise web.HTTPBadRequest(text='scrape_timeout must be an integer') from None
     try:
         with switch:
             counters = await switch.scrape(timeout, collect)
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:
+        logger.exception('Scrape timed out')
         raise web.HTTPGatewayTimeout(
-            text='Scrape timed out after {}s'.format(timeout))
+            text='Scrape timed out after {}s'.format(timeout)
+        ) from None
     except ValidationError as e:
+        logger.exception('Validation error during scrape')
         raise web.HTTPBadRequest(text=str(e)) from None
     except Exception as exc:
         # Possibly a failed connection, so reset it
+        logger.exception('Exception during scrape, resetting switch')
         switch.destroy()
-        raise web.HTTPInternalServerError(text='Scrape failed: ' + str(exc))
+        raise web.HTTPInternalServerError(text='Scrape failed: ' + str(exc)) from None
     else:
         content = prometheus_client.generate_latest(counters).decode()
         return web.Response(text=content)

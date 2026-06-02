@@ -255,12 +255,18 @@ class Switch(Item):
         )
 
         # Include the port header lines so we can associate each result with its port.
-        cmd = (raise Exception(f'Unknown collector: {collector}')oteInfo())
-         labels = (port, info.name, info.port_id, info.port_description)
+        cmd = (
+            r'show interfaces ethernet '
+            r'| include "^Eth|^\s+Last change in operational status: |^"'
+        )
+        result = await self._run_command(cmd)
+        for port, section in split_aggregate(result, _PORT_RE, len(self.ports)):
+            info = self.lldp_info.get(port, LLDPRemoteInfo())
+            labels = (port, info.name, info.port_id, info.port_description)
 
-          # Find the single operational status change line in this section.
-          count = 0
-           for line in section.splitlines():
+            # Find the single operational status change line in this section.
+            count = 0
+            for line in section.splitlines():
                 line = line.strip()
                 match = _OPERATIONAL_CHANGES_RE.match(line)
                 if match:
