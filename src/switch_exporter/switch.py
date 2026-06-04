@@ -2,7 +2,7 @@ import logging
 import asyncio
 import re
 import time
-from typing import Any, Coroutine, Iterable, Optional, Pattern, Tuple
+from typing import Any, Coroutine, Iterable, List, Optional, Pattern, Tuple
 from typing_extensions import override
 
 import attr
@@ -41,6 +41,10 @@ _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
     r'\s*Low Tx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
 _TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (\d+\/\d+) transceiver diagnostic data:')
+
+
+class ValidationError(Exception):
+    pass
 
 
 @attr.s(slots=True)
@@ -108,6 +112,13 @@ class Switch(Item):
         self.lldp_timeout = lldp_timeout
         self._lock = asyncio.Lock()   # Serialises port and lldp info
         self.enable_timing_metrics = enable_timing_metrics
+        self.collectors = {
+            'counters': self._scrape_counters,
+            'state': self._scrape_state,
+            'operational_changes': self._scrape_operational_changes,
+            'link_diagnostic_code': self._scrape_link_diagnostic_code,
+            'transceiver_power': self._scrape_transceiver_power,
+        }
 
     def __repr__(self) -> str:
         return 'Switch({!r})'.format(self.hostname)
@@ -367,14 +378,29 @@ class Switch(Item):
         if self.enable_timing_metrics:
             timing_gauge.labels(self.hostname, coroutine.__name__).set(duration)
 
-    async def scrape(self, timeout: float) -> prometheus_client.CollectorRegistry:
+    async def scrape(
+        self,
+        timeout: float,
+        collectors: Optional[List[str]]
+    ) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
+        registry = prometheus_client.CollectorRegistry()
+        scrapers = []
+        if collectors is None:
+            for scraper in self.collectors.values():
+                scrapers.append(scraper(registry))
+        else:
+            for collector in collectors:
+                try:
+                    scrapers.append(self.collectors[collector](registry))
+                except KeyError as e:
+                    raise ValidationError(f'Unknown collector: {collector}') from e
+
         async with self._lock:
             await self._populate_ports()
             await self._update_lldp_periodically()
 
-        registry = prometheus_client.CollectorRegistry()
         timing_gauge = prometheus_client.Gauge(
             'switch_coroutine_duration_seconds', 'duration of the coroutine',
             labelnames=('hostname', 'coroutine'),
@@ -382,17 +408,12 @@ class Switch(Item):
         )
 
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
-        scrapers = [
-            self._scrape_counters(registry),
-            self._scrape_state(registry),
-            self._scrape_operational_changes(registry),
-            self._scrape_link_diagnostic_code(registry),
-            self._scrape_transceiver_power(registry),
-        ]
         tasks = [asyncio.create_task(self.timed(s, timing_gauge), name=s.__name__)
                  for s in scrapers]
-        timeout = timeout - (time.perf_counter() - start_time)
-        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        scrape_timeout = timeout - (time.perf_counter() - start_time)
+        if scrape_timeout <= 0:
+            raise asyncio.TimeoutError('Timed out before scraping any metrics')
+        done, pending = await asyncio.wait(tasks, timeout=scrape_timeout)
         exceptions = []
         for task in pending:
             logger.error('[%s] Cancelling scraping metrics: %s after %s seconds',
