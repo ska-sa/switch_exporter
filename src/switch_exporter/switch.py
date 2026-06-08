@@ -240,8 +240,8 @@ class Switch(Item):
             sections = section.split()
             info = self.lldp_info.get(port, dummy_info)
             labels = (port, info.name, info.port_id, info.port_description)
-            port_enabled.labels(*labels).set(int(sections[1] == 'Enabled'))
-            port_up.labels(*labels).set(int(sections[2] == 'Up'))
+            port_enabled.labels(*labels).set(int(sections[0] == 'Enabled'))
+            port_up.labels(*labels).set(int(sections[1] == 'Up'))
 
     async def _scrape_operational_changes(
         self,
