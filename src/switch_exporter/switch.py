@@ -40,7 +40,7 @@ _TRANSCEIVER_POWER_HI_TX_THRESHOLD_RE = re.compile(
 _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
     r'\s*Low Tx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
-_TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (\d+\/\d+) transceiver diagnostic data:')
+_TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (\d+\/\d+|\d+\/\d+\/\d+) transceiver diagnostic data:')
 
 
 class ValidationError(Exception):
