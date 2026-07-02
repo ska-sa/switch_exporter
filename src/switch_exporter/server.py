@@ -55,8 +55,8 @@ async def get_metrics(request: web.Request) -> web.Response:
         return web.Response(text=content)
 
 
-def make_app(args: argparse.Namespace) -> web.Application:
-    app = web.Application()
+async def make_app(args: argparse.Namespace, loop: asyncio.AbstractEventLoop) -> web.Application:
+    app = web.Application(loop=loop)
     factory = functools.partial(
         Switch,
         username=args.username,
@@ -96,6 +96,8 @@ def get_arguments() -> argparse.Namespace:
         '--bind', help='Web server local address')
     parser.add_argument(
         '--log-level', default='INFO', help='Log level [%(default)s]')
+
+    katsdpservices.add_aiomonitor_arguments(parser)
     return parser.parse_args()
 
 
@@ -103,8 +105,11 @@ def main() -> None:
     args = get_arguments()
     katsdpservices.setup_logging()
     logging.root.setLevel(args.log_level.upper())
-    app = make_app(args)
-    web.run_app(app, host=args.bind, port=args.port)
+    loop = asyncio.get_event_loop()
+    app = loop.run_until_complete(make_app(args, loop))
+
+    with katsdpservices.aiomonitor.start_aiomonitor(loop, args=args, locals=locals()):
+        web.run_app(app, host=args.bind, port=args.port, loop=loop)
 
 
 if __name__ == '__main__':
