@@ -11,6 +11,7 @@ readme = "README.md"
 requires-python = ">=3.6"
 dependencies = [
     "aiohttp",
+    "aiomonitor",
     "async_timeout",
     "asyncssh",
     "attrs",
