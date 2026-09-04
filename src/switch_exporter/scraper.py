@@ -1,7 +1,7 @@
 
 import asyncio
 from collections.abc import Coroutine
-from typing import Any, Optional, List
+from typing import Optional, List
 import time
 from typing_extensions import override
 import prometheus_client
@@ -35,7 +35,7 @@ class Scraper(Item):
 
     async def timed(
         self,
-        coroutine: Coroutine[Any, Any, None],
+        coroutine: Coroutine,
         timing_gauge: prometheus_client.Gauge,
         hostname: str,
     ) -> None:
