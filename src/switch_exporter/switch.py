@@ -148,6 +148,7 @@ class Switch(Item):
         if now - self.lldp_time < self.lldp_timeout:
             return
         await self._update_lldp()
+        self.lldp_time = now
 
     async def _update_lldp(self) -> None:
         logger.info('Updating LLDP information for %s', self.hostname)
