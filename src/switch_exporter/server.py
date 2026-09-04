@@ -3,12 +3,14 @@ import asyncio
 import functools
 import argparse
 import logging
+from typing import Callable
 
 import katsdpservices
 from aiohttp import web
 import prometheus_client
 
-from .switch import Switch, ValidationError
+from .scraper import Scraper, ValidationError
+from .switch import Switch
 from .cache import Cache
 
 
@@ -25,7 +27,7 @@ async def get_metrics(request: web.Request) -> web.Response:
 
     collect = request.query.getall('collect', None)
     cache = request.app['cache']
-    switch = cache.get(target)
+    scraper = cache.get(target)
     timeout = request.app['scrape_timeout']
     try:
         timeout = int(request.query.get('scrape_timeout', timeout))
@@ -33,8 +35,8 @@ async def get_metrics(request: web.Request) -> web.Response:
         logger.exception('Invalid scrape_timeout value')
         raise web.HTTPBadRequest(text='scrape_timeout must be an integer') from None
     try:
-        with switch:
-            counters = await switch.scrape(timeout, collect)
+        with scraper:
+            counters = await scraper.scrape(timeout, collect)
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError:
@@ -48,23 +50,30 @@ async def get_metrics(request: web.Request) -> web.Response:
     except Exception as exc:
         # Possibly a failed connection, so reset it
         logger.exception('Exception during scrape, resetting switch')
-        switch.destroy()
+        scraper.destroy()
         raise web.HTTPInternalServerError(text='Scrape failed: ' + str(exc)) from None
     else:
         content = prometheus_client.generate_latest(counters).decode()
         return web.Response(text=content)
 
 
+def scraper_factory(switch_factory) -> Callable[[Cache, str], Scraper]:
+    def scraper(cache: Cache, target: str) -> Scraper:
+        switch = switch_factory(target)
+        return Scraper(cache, switch)
+    return scraper
+
+
 async def make_app(args: argparse.Namespace, loop: asyncio.AbstractEventLoop) -> web.Application:
     app = web.Application(loop=loop)
-    factory = functools.partial(
+    switch_factory = functools.partial(
         Switch,
         username=args.username,
         password=args.password,
         keyfile=args.keyfile,
         lldp_timeout=args.lldp_timeout,
     )
-    app['cache'] = Cache(factory, args.connection_timeout)
+    app['cache'] = Cache(scraper_factory(switch_factory), args.connection_timeout)
     app['scrape_timeout'] = args.scrape_timeout
     app.router.add_get('/metrics', get_metrics)
     return app

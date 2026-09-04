@@ -1,16 +1,13 @@
 import logging
-import asyncio
 import re
 import time
-from typing import Any, Coroutine, Iterable, List, Optional, Pattern, Tuple
-from typing_extensions import override
+from typing import Iterable, Optional, Pattern, Tuple
 
 import attr
 import prometheus_client
 
 from .connection import Connection
 
-from .cache import Cache, Item
 from . import metrics
 
 logger = logging.getLogger(__name__)
@@ -41,10 +38,6 @@ _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
     r'\s*Low Tx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
 _TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (\d+(?:\/\d+)+) transceiver diagnostic data:')
-
-
-class ValidationError(Exception):
-    pass
 
 
 @attr.s(slots=True)
@@ -85,7 +78,7 @@ def split_aggregate(
         yield data[i], data[i + 1]
 
 
-class Switch(Item):
+class Switch:
     """Collect statistics about a single switch.
 
     An instance has an SSH connection that is initialised on first use. It
@@ -95,23 +88,18 @@ class Switch(Item):
 
     def __init__(
         self,
-        cache: Cache,
         hostname: str,
         username: str,
         password: str,
         keyfile: str,
         lldp_timeout: float,
-        enable_timing_metrics: bool = True,
     ) -> None:
-        super().__init__(cache, hostname)
         self.ports = []
         self.conn = Connection(hostname, username, password, keyfile)
         self.hostname = hostname
         self.lldp_info = {}
         self.lldp_time = 0.0          # time when LLDP info was last updated
         self.lldp_timeout = lldp_timeout
-        self._lock = asyncio.Lock()   # Serialises port and lldp info
-        self.enable_timing_metrics = enable_timing_metrics
         self.collectors = {
             'counters': self._scrape_counters,
             'state': self._scrape_state,
@@ -128,6 +116,11 @@ class Switch(Item):
         if not isinstance(result, str):
             raise TypeError(f'Expected str, got {type(result)}')
         return result
+
+    async def maybe_refresh_port_info(self) -> None:
+        """Refresh the port information"""
+        await self._populate_ports()
+        await self._update_lldp()
 
     async def _populate_ports(self) -> None:
         """Populate the ports list"""
@@ -367,72 +360,5 @@ class Switch(Item):
                 child.set(float(match.group(1)))
         # No assertions here because some switches don't support transceiver power
 
-    async def timed(
-        self,
-        coroutine: Coroutine[Any, Any, None],
-        timing_gauge: prometheus_client.Gauge
-    ) -> None:
-        start_time = time.perf_counter()
-        await coroutine
-        end_time = time.perf_counter()
-        duration = end_time - start_time
-        if self.enable_timing_metrics:
-            timing_gauge.labels(self.hostname, coroutine.__name__).set(duration)
-
-    async def scrape(
-        self,
-        timeout: float,
-        collectors: Optional[List[str]]
-    ) -> prometheus_client.CollectorRegistry:
-        """Obtain the metrics from the switch"""
-        start_time = time.perf_counter()
-        registry = prometheus_client.CollectorRegistry()
-        scrapers = []
-        if collectors is None:
-            for scraper in self.collectors.values():
-                scrapers.append(scraper(registry))
-        else:
-            for collector in collectors:
-                try:
-                    scrapers.append(self.collectors[collector](registry))
-                except KeyError as e:
-                    raise ValidationError(f'Unknown collector: {collector}') from e
-
-        async with self._lock:
-            await self._populate_ports()
-            await self._update_lldp_periodically()
-
-        timing_gauge = prometheus_client.Gauge(
-            'switch_coroutine_duration_seconds', 'duration of the coroutine',
-            labelnames=('hostname', 'coroutine'),
-            registry=registry,
-        )
-
-        # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
-        tasks = [asyncio.create_task(self.timed(s, timing_gauge), name=s.__name__)
-                 for s in scrapers]
-        scrape_timeout = timeout - (time.perf_counter() - start_time)
-        if scrape_timeout <= 0:
-            raise asyncio.TimeoutError('Timed out before scraping any metrics')
-        done, pending = await asyncio.wait(tasks, timeout=scrape_timeout)
-        exceptions = []
-        for task in pending:
-            logger.error('[%s] Cancelling scraping metrics: %s after %s seconds',
-                         self.hostname, task.get_name(), timeout)
-            task.cancel()
-        for task in done:
-            try:
-                task.result()
-            except Exception as e:
-                logger.error('Error during scraping metrics: %s', task.get_name())
-                exceptions.append(e)
-
-        if exceptions:
-            raise Exception(
-                "Error during scraping metrics: " + ', '.join([str(e) for e in exceptions])
-            )
-        return registry
-
-    @override
     async def close(self) -> None:
         await self.conn.close()
