@@ -48,7 +48,8 @@ class Scraper(Item):
             timing_gauge.labels(hostname, coroutine.__name__).set(duration)
 
     async def wait_for_scraper(self) -> None:
-        """Wait until collector tasks finish and publish completion.
+        """Wait until collector tasks finish and update the registry.
+        Sets the self.done event when the scraper is done.
 
         Must not raise: this runs as a background task so that a timed-out
         caller does not prevent ``done`` from being set.
