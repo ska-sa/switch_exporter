@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import time
@@ -107,6 +108,7 @@ class Switch:
             'link_diagnostic_code': self._scrape_link_diagnostic_code,
             'transceiver_power': self._scrape_transceiver_power,
         }
+        self._lock = asyncio.Lock()
 
     def __repr__(self) -> str:
         return 'Switch({!r})'.format(self.hostname)
@@ -119,8 +121,9 @@ class Switch:
 
     async def refresh_port_info(self) -> None:
         """Refresh the port information only once, and periodically update the LLDP information"""
-        await self._populate_ports()
-        await self._update_lldp_periodically()
+        async with self._lock:
+            await self._populate_ports()
+            await self._update_lldp_periodically()
 
     async def _populate_ports(self) -> None:
         """Populate the ports list"""

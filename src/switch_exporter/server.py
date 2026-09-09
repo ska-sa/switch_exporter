@@ -49,7 +49,7 @@ async def get_metrics(request: web.Request) -> web.Response:
         raise web.HTTPBadRequest(text=str(e)) from None
     except Exception as exc:
         # Possibly a failed connection, so reset it
-        logger.exception('Exception during scrape, resetting switch')
+        logger.exception('Exception during scrape, resetting scraper')
         scraper.destroy()
         raise web.HTTPInternalServerError(text='Scrape failed: ' + str(exc)) from None
     else:

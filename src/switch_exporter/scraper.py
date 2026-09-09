@@ -29,9 +29,10 @@ class Scraper(Item):
         self._lock = asyncio.Lock()
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
         self.tasks = []
-        self.done = True
+        self.done = asyncio.Event()
+        self.done.set()
         self.registry = prometheus_client.CollectorRegistry()
-        self.exceptions: list[Exception] = []
+        self._error = None
 
     async def timed(
         self,
@@ -47,19 +48,36 @@ class Scraper(Item):
             timing_gauge.labels(hostname, coroutine.__name__).set(duration)
 
     async def wait_for_scraper(self) -> None:
-        done, pending = await asyncio.wait(self.tasks, timeout=self.timeout)
-        if pending:
-            raise asyncio.TimeoutError('Timed out waiting for tasks to complete, '
-                                       f'scraper still running, pending tasks: {pending}')
+        """Wait until collector tasks finish and publish completion.
 
-        for task in done:
-            try:
-                task.result()
-            except Exception as e:
-                logger.error('Error during scraping metrics: %s', task.get_name())
-                self.exceptions.append(e)
+        Must not raise: this runs as a background task so that a timed-out
+        caller does not prevent ``done`` from being set.
+        """
+        try:
+            if not self.tasks:
+                return
+            done, _ = await asyncio.wait(self.tasks)
+            exceptions = []
+            for task in done:
+                try:
+                    task.result()
+                except Exception as e:
+                    logger.error('Error during scraping metrics: %s', task.get_name())
+                    exceptions.append(e)
+            if exceptions:
+                self._error = Exception(
+                    "Error during scraping metrics: " + ', '.join([str(e) for e in exceptions])
+                )
+        except Exception as e:
+            self._error = e
+        finally:
+            self.done.set()
 
-        self.done = True
+    async def await_scraper_done(self, timeout: float) -> prometheus_client.CollectorRegistry:
+        await asyncio.wait_for(self.done.wait(), timeout=timeout)
+        if self._error is not None:
+            raise self._error
+        return self.registry
 
     async def scrape(
         self,
@@ -68,14 +86,15 @@ class Scraper(Item):
     ) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
+        async with self._lock:
+            scrape_timeout = timeout - (time.perf_counter() - start_time)
+            new_scrape = self.done.is_set()
+            if new_scrape:
+                self.done.clear()
 
-        if not self.done:
-            await self.wait_for_scraper()
-            return self.registry
+        if not new_scrape:
+            return await self.await_scraper_done(scrape_timeout)
 
-        self.done = False
-        self.timeout = timeout  # set timeout dynamically for scrape from params
-        self.exceptions.clear()
         self.registry = prometheus_client.CollectorRegistry()
         scrapers = []
         if collectors is None:
@@ -88,8 +107,7 @@ class Scraper(Item):
                 except KeyError as e:
                     raise ValidationError(f'Unknown collector: {collector}') from e
 
-        async with self._lock:
-            await self.switch.refresh_port_info()
+        await self.switch.refresh_port_info()
 
         timing_gauge = prometheus_client.Gauge(
             'switch_coroutine_duration_seconds', 'duration of the coroutine',
@@ -105,14 +123,10 @@ class Scraper(Item):
         if scrape_timeout <= 0:
             raise asyncio.TimeoutError('Timed out before scraping any metrics')
 
-        if self.exceptions:
-            raise Exception(
-                "Error during scraping metrics: " + ', '.join([str(e) for e in self.exceptions])
-            )
-        await self.wait_for_scraper()
-        return self.registry
+        asyncio.create_task(self.wait_for_scraper())
+        return await self.await_scraper_done(scrape_timeout)
 
     @override
     async def close(self) -> None:
         await self.switch.close()
-        self.done = True
+        self.done.set()
