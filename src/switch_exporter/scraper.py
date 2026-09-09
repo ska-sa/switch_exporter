@@ -29,8 +29,8 @@ class Scraper(Item):
         self._lock = asyncio.Lock()
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
         self.tasks = []
-        self.done = asyncio.Event()
-        self.done.set()
+        self.done = asyncio.Event()  # Set to True when the scraper is done scraping.
+        self.done.set()  # Initially set to True to indicate that the scraper should be started.
         self.registry = prometheus_client.CollectorRegistry()
         self._error = None
 
