@@ -29,9 +29,9 @@ class Scraper(Item):
         self._lock = asyncio.Lock()
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
         self.tasks = []
-        self.done = asyncio.Event()
+        self.done = True
+        self.registry = prometheus_client.CollectorRegistry()
         self.exceptions: list[Exception] = []
-        self.done.set()
 
     async def timed(
         self,
@@ -59,7 +59,7 @@ class Scraper(Item):
                 logger.error('Error during scraping metrics: %s', task.get_name())
                 self.exceptions.append(e)
 
-        self.done.set()
+        self.done = True
 
     async def scrape(
         self,
@@ -69,11 +69,11 @@ class Scraper(Item):
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
 
-        if not self.done.is_set():
+        if not self.done:
             await self.wait_for_scraper()
             return self.registry
 
-        self.done.clear()
+        self.done = False
         self.timeout = timeout  # set timeout dynamically for scrape from params
         self.exceptions.clear()
         self.registry = prometheus_client.CollectorRegistry()
@@ -89,7 +89,7 @@ class Scraper(Item):
                     raise ValidationError(f'Unknown collector: {collector}') from e
 
         async with self._lock:
-            await self.switch.maybe_refresh_port_info()
+            await self.switch.refresh_port_info()
 
         timing_gauge = prometheus_client.Gauge(
             'switch_coroutine_duration_seconds', 'duration of the coroutine',
@@ -115,4 +115,4 @@ class Scraper(Item):
     @override
     async def close(self) -> None:
         await self.switch.close()
-        self.done.set()
+        self.done = True

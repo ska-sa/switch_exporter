@@ -117,10 +117,10 @@ class Switch:
             raise TypeError(f'Expected str, got {type(result)}')
         return result
 
-    async def maybe_refresh_port_info(self) -> None:
-        """Refresh the port information"""
+    async def refresh_port_info(self) -> None:
+        """Refresh the port information only once, and periodically update the LLDP information"""
         await self._populate_ports()
-        await self._update_lldp()
+        await self._update_lldp_periodically()
 
     async def _populate_ports(self) -> None:
         """Populate the ports list"""
