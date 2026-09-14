@@ -56,8 +56,6 @@ class Scraper(Item):
         caller does not prevent ``done`` from being set.
         """
         try:
-            if not self.tasks:
-                return
             done, _ = await asyncio.wait(self.tasks)
             exceptions = []
             for task in done:
@@ -114,12 +112,11 @@ class Scraper(Item):
                     asyncio.create_task(self.timed(s, timing_gauge, self.switch.hostname), name=s.__name__)
                     for s in scrapers
                 ]
+                self.registry = temp_registry
                 self.done.clear()
 
         if not new_scrape:
             return await self.await_scraper_done(scrape_timeout)
-
-        self.registry = temp_registry
 
         await self.switch.refresh_port_info()
 
