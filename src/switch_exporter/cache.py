@@ -113,7 +113,7 @@ class Cache(Generic[_T]):
         try:
             item = self._items[key]
         except KeyError:
-            item = self.item_cls(self, *init_params)
+            item = self.item_cls(self, key, *init_params)
             logging.info('Created %r', item)
             self._items[key] = item
         return item

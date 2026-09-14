@@ -20,10 +20,11 @@ class Scraper(Item):
     def __init__(
         self,
         cache: Cache,
+        key: str,
         switch: Switch,
         enable_timing_metrics: bool = True,
     ) -> None:
-        super().__init__(cache, switch.hostname)
+        super().__init__(cache, key)
         self.enable_timing_metrics = enable_timing_metrics
         self.switch = switch
         self._lock = asyncio.Lock()
@@ -87,16 +88,7 @@ class Scraper(Item):
     ) -> prometheus_client.CollectorRegistry:
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
-        async with self._lock:
-            scrape_timeout = timeout - (time.perf_counter() - start_time)
-            new_scrape = self.done.is_set()
-            if new_scrape:
-                self.done.clear()
 
-        if not new_scrape:
-            return await self.await_scraper_done(scrape_timeout)
-
-        self.registry = prometheus_client.CollectorRegistry()
         scrapers = []
         if collectors is None:
             for scraper in self.switch.collectors.values():
@@ -108,6 +100,21 @@ class Scraper(Item):
                 except KeyError as e:
                     raise ValidationError(f'Unknown collector: {collector}') from e
 
+        async with self._lock:
+            scrape_timeout = timeout - (time.perf_counter() - start_time)
+            new_scrape = self.done.is_set()
+            if new_scrape:
+                self.tasks = [
+                    asyncio.create_task(self.timed(s, timing_gauge, self.switch.hostname), name=s.__name__)
+                    for s in scrapers
+                ]
+                self.done.clear()
+
+        if not new_scrape:
+            return await self.await_scraper_done(scrape_timeout)
+
+        self.registry = prometheus_client.CollectorRegistry()
+
         await self.switch.refresh_port_info()
 
         timing_gauge = prometheus_client.Gauge(
@@ -116,10 +123,6 @@ class Scraper(Item):
             registry=self.registry,
         )
 
-        self.tasks = [
-            asyncio.create_task(self.timed(s, timing_gauge, self.switch.hostname), name=s.__name__)
-            for s in scrapers
-        ]
         scrape_timeout = timeout - (time.perf_counter() - start_time)
         if scrape_timeout <= 0:
             raise asyncio.TimeoutError('Timed out before scraping any metrics')

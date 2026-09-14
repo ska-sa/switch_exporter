@@ -58,9 +58,9 @@ async def get_metrics(request: web.Request) -> web.Response:
 
 
 def scraper_factory(switch_factory: Callable) -> Callable[[Cache, str], Scraper]:
-    def scraper(cache: Cache, target: str) -> Scraper:
+    def scraper(cache: Cache, key: str, target: str) -> Scraper:
         switch = switch_factory(target)
-        return Scraper(cache, switch)
+        return Scraper(cache, key, switch)
     return scraper
 
 
