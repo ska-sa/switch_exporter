@@ -89,14 +89,20 @@ class Scraper(Item):
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
 
+        temp_registry = prometheus_client.CollectorRegistry()
         scrapers = []
+        timing_gauge = prometheus_client.Gauge(
+            'switch_coroutine_duration_seconds', 'duration of the coroutine',
+            labelnames=('hostname', 'coroutine'),
+            registry=temp_registry,
+        )
         if collectors is None:
             for scraper in self.switch.collectors.values():
                 scrapers.append(scraper(self.registry))
         else:
             for collector in collectors:
                 try:
-                    scrapers.append(self.switch.collectors[collector](self.registry))
+                    scrapers.append(self.switch.collectors[collector](temp_registry))
                 except KeyError as e:
                     raise ValidationError(f'Unknown collector: {collector}') from e
 
@@ -113,15 +119,9 @@ class Scraper(Item):
         if not new_scrape:
             return await self.await_scraper_done(scrape_timeout)
 
-        self.registry = prometheus_client.CollectorRegistry()
+        self.registry = temp_registry
 
         await self.switch.refresh_port_info()
-
-        timing_gauge = prometheus_client.Gauge(
-            'switch_coroutine_duration_seconds', 'duration of the coroutine',
-            labelnames=('hostname', 'coroutine'),
-            registry=self.registry,
-        )
 
         scrape_timeout = timeout - (time.perf_counter() - start_time)
         if scrape_timeout <= 0:
