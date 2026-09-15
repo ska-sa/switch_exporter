@@ -24,6 +24,7 @@ class Scraper(Item):
         switch: Switch,
         enable_timing_metrics: bool = True,
     ) -> None:
+        self.key = key
         super().__init__(cache, key)
         self.enable_timing_metrics = enable_timing_metrics
         self.switch = switch
@@ -55,6 +56,7 @@ class Scraper(Item):
         Must not raise: this runs as a background task so that a timed-out
         caller does not prevent ``done`` from being set.
         """
+        self._error = None
         try:
             done, _ = await asyncio.wait(self.tasks)
             exceptions = []
@@ -74,9 +76,15 @@ class Scraper(Item):
             self.done.set()
 
     async def await_scraper_done(self, timeout: float) -> prometheus_client.CollectorRegistry:
-        await asyncio.wait_for(self.done.wait(), timeout=timeout)
         if self._error is not None:
             raise self._error
+        try:
+            await asyncio.wait_for(self.done.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(f'Timeout handling {self.key} metrics')
+        except Exception as e:
+            raise e
+
         return self.registry
 
     async def scrape(
@@ -87,20 +95,20 @@ class Scraper(Item):
         """Obtain the metrics from the switch"""
         start_time = time.perf_counter()
 
+        await self.switch.refresh_port_info()
         temp_registry = prometheus_client.CollectorRegistry()
-        scrapers = []
         timing_gauge = prometheus_client.Gauge(
             'switch_coroutine_duration_seconds', 'duration of the coroutine',
             labelnames=('hostname', 'coroutine'),
             registry=temp_registry,
         )
         if collectors is None:
-            for scraper in self.switch.collectors.values():
-                scrapers.append(scraper(self.registry))
+            scraper_fns = list(self.switch.collectors.values())
         else:
+            scraper_fns = []
             for collector in collectors:
                 try:
-                    scrapers.append(self.switch.collectors[collector](temp_registry))
+                    scraper_fns.append(self.switch.collectors[collector])
                 except KeyError as e:
                     raise ValidationError(f'Unknown collector: {collector}') from e
 
@@ -108,6 +116,7 @@ class Scraper(Item):
             scrape_timeout = timeout - (time.perf_counter() - start_time)
             new_scrape = self.done.is_set()
             if new_scrape:
+                scrapers = [fn(temp_registry) for fn in scraper_fns]
                 self.tasks = [
                     asyncio.create_task(self.timed(s, timing_gauge, self.switch.hostname), name=s.__name__)
                     for s in scrapers
@@ -115,16 +124,13 @@ class Scraper(Item):
                 self.registry = temp_registry
                 self.done.clear()
 
-        if not new_scrape:
-            return await self.await_scraper_done(scrape_timeout)
-
-        await self.switch.refresh_port_info()
+        if new_scrape:
+            asyncio.create_task(self.wait_for_scraper())
 
         scrape_timeout = timeout - (time.perf_counter() - start_time)
         if scrape_timeout <= 0:
             raise asyncio.TimeoutError('Timed out before scraping any metrics')
 
-        asyncio.create_task(self.wait_for_scraper())
         return await self.await_scraper_done(scrape_timeout)
 
     @override
