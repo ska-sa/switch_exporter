@@ -35,6 +35,8 @@ class Scraper(Item):
         self.done.set()  # Initially set to True to indicate that the scraper should be started.
         self.registry = prometheus_client.CollectorRegistry()
         self._error = None
+        # if we timout too many times, we should raise an error and reset scraper
+        self.timeout_counter = 0
 
     async def timed(
         self,
@@ -81,10 +83,14 @@ class Scraper(Item):
         try:
             await asyncio.wait_for(self.done.wait(), timeout=timeout)
         except asyncio.TimeoutError:
+            self.timeout_counter += 1
+            if self.timeout_counter > 10:
+                raise RuntimeError(f'Timeout handling {self.key} metrics too many times')
             raise asyncio.TimeoutError(f'Timeout handling {self.key} metrics')
         except Exception as e:
             raise e
 
+        self.timeout_counter = 0
         return self.registry
 
     async def scrape(
@@ -118,18 +124,17 @@ class Scraper(Item):
             if new_scrape:
                 scrapers = [fn(temp_registry) for fn in scraper_fns]
                 self.tasks = [
-                    asyncio.create_task(self.timed(s, timing_gauge, self.switch.hostname), name=s.__name__)
+                    asyncio.create_task(
+                        self.timed(s, timing_gauge, self.switch.hostname),
+                        name=s.__name__ + f'({self.key})'
+                    )
                     for s in scrapers
                 ]
                 self.registry = temp_registry
                 self.done.clear()
 
         if new_scrape:
-            asyncio.create_task(self.wait_for_scraper())
-
-        scrape_timeout = timeout - (time.perf_counter() - start_time)
-        if scrape_timeout <= 0:
-            raise asyncio.TimeoutError('Timed out before scraping any metrics')
+            asyncio.create_task(self.wait_for_scraper(), name=f'wait_for_scraper({self.key})')
 
         return await self.await_scraper_done(scrape_timeout)
 
@@ -137,3 +142,4 @@ class Scraper(Item):
     async def close(self) -> None:
         await self.switch.close()
         self.done.set()
+        self.timeout_counter = 0
