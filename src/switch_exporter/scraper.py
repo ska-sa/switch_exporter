@@ -24,7 +24,6 @@ class Scraper(Item):
         switch: Switch,
         enable_timing_metrics: bool = True,
     ) -> None:
-        self.key = key
         super().__init__(cache, key)
         self.enable_timing_metrics = enable_timing_metrics
         self.switch = switch
@@ -85,8 +84,8 @@ class Scraper(Item):
         except asyncio.TimeoutError:
             self.timeout_counter += 1
             if self.timeout_counter > 10:
-                raise RuntimeError(f'Timeout handling {self.key} metrics too many times')
-            raise asyncio.TimeoutError(f'Timeout handling {self.key} metrics')
+                raise RuntimeError(f'Timed out waiting for {self.cache_key} metrics {self.timeout_counter} times')
+            raise asyncio.TimeoutError(f'Timed out waiting for {self.cache_key} metrics')
         except Exception as e:
             raise e
 
@@ -126,7 +125,7 @@ class Scraper(Item):
                 self.tasks = [
                     asyncio.create_task(
                         self.timed(s, timing_gauge, self.switch.hostname),
-                        name=s.__name__ + f'({self.key})'
+                        name=s.__name__ + f'({self.cache_key})'
                     )
                     for s in scrapers
                 ]
@@ -134,7 +133,7 @@ class Scraper(Item):
                 self.done.clear()
 
         if new_scrape:
-            asyncio.create_task(self.wait_for_scraper(), name=f'wait_for_scraper({self.key})')
+            asyncio.create_task(self.wait_for_scraper(), name=f'wait_for_scraper({self.cache_key})')
 
         return await self.await_scraper_done(scrape_timeout)
 
