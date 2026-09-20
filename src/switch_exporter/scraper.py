@@ -1,7 +1,7 @@
 
 import asyncio
 from collections.abc import Coroutine
-from typing import Optional, List
+from typing import Callable, Optional, List
 import time
 from typing_extensions import override
 import prometheus_client
@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 class ValidationError(Exception):
+    pass
+
+
+class ScrapeError(Exception):
     pass
 
 
@@ -29,12 +33,10 @@ class Scraper(Item):
         self.switch = switch
         self._lock = asyncio.Lock()
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
-        self.tasks = []
-        self.done = asyncio.Event()  # Set to True when the scraper is done scraping.
-        self.done.set()  # Initially set to True to indicate that the scraper should be started.
-        self.registry = prometheus_client.CollectorRegistry()
         self._error = None
-        # if we timout too many times, we should raise an error and reset scraper
+        self.registry = prometheus_client.CollectorRegistry()
+        self.results_shown = True
+        self.scraper_task = None
         self.timeout_counter = 0
 
     async def timed(
@@ -50,16 +52,26 @@ class Scraper(Item):
         if self.enable_timing_metrics:
             timing_gauge.labels(hostname, coroutine.__name__).set(duration)
 
-    async def wait_for_scraper(self) -> None:
-        """Wait until collector tasks finish and update the registry.
-        Sets the self.done event when the scraper is done.
+    async def start_tasks(self, tasks_fns: List) -> None:
+        """Start a task that runs the collector functionswhich updates the registry.
+        Also, it creates a timing gauge for the duration of the coroutine.
+        Once done, the `self.scraper_task` attribute is set to None.
 
-        Must not raise: this runs as a background task so that a timed-out
-        caller does not prevent ``done`` from being set.
+        Must not raise: this runs as a background task, the errors should be raised when
+        awaiting on task completion, possible from multiple client sessions, instead.
         """
+        temp_registry = prometheus_client.CollectorRegistry()
+        timing_gauge = prometheus_client.Gauge(
+            'switch_coroutine_duration_seconds', 'duration of the coroutine',
+            labelnames=('hostname', 'coroutine'),
+            registry=temp_registry,
+        )
+        tasks = [fn(temp_registry) for fn in tasks_fns]
+        tasks = [asyncio.create_task(self.timed(s, timing_gauge, self.switch.hostname), name=s.__name__ + f'({self._cache_key})') for s in tasks]
         self._error = None
+        self.results_shown = False
         try:
-            done, _ = await asyncio.wait(self.tasks)
+            done, _ = await asyncio.wait(tasks)
             exceptions = []
             for task in done:
                 try:
@@ -68,28 +80,48 @@ class Scraper(Item):
                     logger.error('Error during scraping metrics: %s', task.get_name())
                     exceptions.append(e)
             if exceptions:
-                self._error = Exception(
+                self._error = ScrapeError(
                     "Error during scraping metrics: " + ', '.join([str(e) for e in exceptions])
                 )
         except Exception as e:
             self._error = e
         finally:
-            self.done.set()
+            self.registry = temp_registry
+            self.scraper_task = None
 
-    async def await_scraper_done(self, timeout: float) -> prometheus_client.CollectorRegistry:
+    async def tasks_done(self, timeout: float) -> prometheus_client.CollectorRegistry:
+        """Wait for the scrape_task to complete within the timout given.
+
+        Returns
+        -------
+        prometheus_client.CollectorRegistry
+            The prometheus registry that the collectors filled with metrics as it completed or the previous unpresented one.
+
+        Raises
+        ----------
+        TimeoutError
+            When the timeout value is less than the time taken for the `scraper_task`
+        ScrapeError
+            When the scrape_task encountered an error on any of the collectors.
+        RuntimeError
+            When the scraper is getting timouts in sequence an excessive amount of times (10)
+        """
         if self._error is not None:
             raise self._error
         try:
-            await asyncio.wait_for(self.done.wait(), timeout=timeout)
+            if self.scraper_task is None:
+                self.timeout_counter = 0
+                self.results_shown = True
+                return self.registry
+            await asyncio.wait_for(self.scraper_task, timeout=timeout)
         except asyncio.TimeoutError:
             self.timeout_counter += 1
             if self.timeout_counter > 10:
-                raise RuntimeError(f'Timed out waiting for {self.cache_key} metrics {self.timeout_counter} times')
-            raise asyncio.TimeoutError(f'Timed out waiting for {self.cache_key} metrics')
-        except Exception as e:
-            raise e
+                raise RuntimeError(f'Timed out waiting for {self._cache_key} metrics {self.timeout_counter} times')
+            raise asyncio.TimeoutError(f'Timed out waiting for {self._cache_key} metrics')
 
         self.timeout_counter = 0
+        self.results_shown = True
         return self.registry
 
     async def scrape(
@@ -101,16 +133,11 @@ class Scraper(Item):
         start_time = time.perf_counter()
 
         await self.switch.refresh_port_info()
-        temp_registry = prometheus_client.CollectorRegistry()
-        timing_gauge = prometheus_client.Gauge(
-            'switch_coroutine_duration_seconds', 'duration of the coroutine',
-            labelnames=('hostname', 'coroutine'),
-            registry=temp_registry,
-        )
+
+        scraper_fns = []
         if collectors is None:
-            scraper_fns = list(self.switch.collectors.values())
+            scraper_fns = self.switch.collectors.values()
         else:
-            scraper_fns = []
             for collector in collectors:
                 try:
                     scraper_fns.append(self.switch.collectors[collector])
@@ -119,26 +146,19 @@ class Scraper(Item):
 
         async with self._lock:
             scrape_timeout = timeout - (time.perf_counter() - start_time)
-            new_scrape = self.done.is_set()
-            if new_scrape:
-                scrapers = [fn(temp_registry) for fn in scraper_fns]
-                self.tasks = [
-                    asyncio.create_task(
-                        self.timed(s, timing_gauge, self.switch.hostname),
-                        name=s.__name__ + f'({self.cache_key})'
-                    )
-                    for s in scrapers
-                ]
-                self.registry = temp_registry
-                self.done.clear()
+            if self.results_shown is True and self.scraper_task is None:
+                # We have already returned the results, so we need to start a new task to scrape the metrics.
+                self.registry = prometheus_client.CollectorRegistry()
+                self.scraper_task = asyncio.create_task(self.start_tasks(scraper_fns), name=f'scraper_task({self._cache_key})')
 
-        if new_scrape:
-            asyncio.create_task(self.wait_for_scraper(), name=f'wait_for_scraper({self.cache_key})')
-
-        return await self.await_scraper_done(scrape_timeout)
+        return await self.tasks_done(scrape_timeout)
 
     @override
     async def close(self) -> None:
         await self.switch.close()
-        self.done.set()
+        if self.scraper_task is not None:
+            self.scraper_task.cancel()
+        self.registry = prometheus_client.CollectorRegistry()
+        self.results_shown = True
+        self.scraper_task = None
         self.timeout_counter = 0
