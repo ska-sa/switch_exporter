@@ -1,7 +1,7 @@
 
 import asyncio
 from collections.abc import Coroutine
-from typing import Optional, List
+from typing import Callable, Optional, List
 import time
 from typing_extensions import override
 import prometheus_client
@@ -51,7 +51,7 @@ class Scraper(Item):
         if self.enable_timing_metrics:
             timing_gauge.labels(hostname, coroutine.__name__).set(duration)
 
-    async def start_collectors(self, collectors_fns: List) -> None:
+    async def start_collectors(self, collectors_fns: List[Callable]) -> None:
         """Start a task that runs the collector functions which updates the registry.
 
         A timing gauge for the duration of the collectors is created.
@@ -98,7 +98,7 @@ class Scraper(Item):
             self.scraper_task = None
 
     async def collectors_done(self, timeout: float) -> prometheus_client.CollectorRegistry:
-        """Wait for the `self.scraper_task` to complete within the timout given.
+        """Wait for the `self.scraper_task` to complete within the timeout given.
 
         Returns
         -------
@@ -113,7 +113,7 @@ class Scraper(Item):
         ScrapeError
             When the `self.scraper_task` encountered an error on any of the collectors.
         RuntimeError
-            When the scraper is getting timouts in sequence an excessive amount of times (10)
+            When the scraper is getting timeouts in sequence an excessive amount of times (10)
         """
         try:
             if self.scraper_task is None:
@@ -151,7 +151,7 @@ class Scraper(Item):
 
         scraper_fns = []
         if collectors is None:
-            scraper_fns = self.switch.collectors.values()
+            scraper_fns = list(self.switch.collectors.values())
         else:
             for collector in collectors:
                 try:
