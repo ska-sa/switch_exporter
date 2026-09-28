@@ -27,7 +27,8 @@ async def get_metrics(request: web.Request) -> web.Response:
 
     collect = request.query.getall('collect', None)
     cache = request.app['cache']
-    scraper = cache.get(target + ':' + ','.join(collect) if collect else target, target)
+    cache_key = f"{target}:{','.join(collect) if collect else ''}"
+    scraper = cache.get(cache_key, init_params=[target])
     timeout = request.app['scrape_timeout']
     try:
         timeout = int(request.query.get('scrape_timeout', timeout))

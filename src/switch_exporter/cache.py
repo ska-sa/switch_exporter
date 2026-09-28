@@ -108,7 +108,7 @@ class Cache(Generic[_T]):
         self.item_cls = item_cls
         self.timeout = timeout
 
-    def get(self, key: _T, *init_params) -> Item[_T]:
+    def get(self, key: _T, init_params: list) -> Item[_T]:
         """Obtain an item from the cache, creating it if necessary."""
         try:
             item = self._items[key]
