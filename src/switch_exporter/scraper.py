@@ -60,13 +60,12 @@ class Scraper(Item):
         Must not raise: this runs as a background task, the errors should be raised when
         awaiting on task completion, possible from multiple client sessions, instead.
         """
-        temp_registry = prometheus_client.CollectorRegistry()
         timing_gauge = prometheus_client.Gauge(
             'switch_coroutine_duration_seconds', 'duration of the coroutine',
             labelnames=('hostname', 'coroutine'),
-            registry=temp_registry,
+            registry=self.registry,
         )
-        collectors = [fn(temp_registry) for fn in collectors_fns]
+        collectors = [fn(self.registry) for fn in collectors_fns]
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
         tasks = [
             asyncio.create_task(
@@ -74,7 +73,7 @@ class Scraper(Item):
                 name=f"{c.__name__}({self._cache_key})"
             ) for c in collectors
         ]
-        self._error = None  # race condition
+        self._error = None
         self.results_shown = False
         try:
             # NOTE: We use `asyncio.wait` instead of `asyncio.gather` to identify the tasks when
@@ -93,9 +92,6 @@ class Scraper(Item):
                 )
         except Exception as e:
             self._error = e
-        finally:
-            self.registry = temp_registry
-            self.scraper_task = None
 
     async def collectors_done(self, timeout: float) -> prometheus_client.CollectorRegistry:
         """Wait for the `self.scraper_task` to complete within the timeout given.
@@ -134,6 +130,11 @@ class Scraper(Item):
                     f'{self.timeout_counter} times'
                 ) from None
             raise asyncio.TimeoutError(f'Timed out waiting for {self._cache_key} metrics') from None
+        except asyncio.CancelledError:
+            self.scraper_task = None
+            raise
+        else:
+            self.scraper_task = None
 
         self.timeout_counter = 0
         self.results_shown = True

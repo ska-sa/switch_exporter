@@ -39,20 +39,19 @@ async def get_metrics(request: web.Request) -> web.Response:
         with scraper:
             counters = await scraper.scrape(timeout, collect)
     except asyncio.CancelledError:
-        raise
+        logger.exception('Scrape cancelled')
+        return web.Response(text='Scrape cancelled', status=500)
     except asyncio.TimeoutError:
         logger.exception('Scrape timed out')
-        raise web.HTTPGatewayTimeout(
-            text='Scrape timed out after {}s'.format(timeout)
-        ) from None
+        return web.Response(text='Scrape timed out after {}s'.format(timeout), status=504)
     except ValidationError as e:
         logger.exception('Validation error during scrape')
-        raise web.HTTPBadRequest(text=str(e)) from None
+        return web.Response(text=str(e), status=400)
     except Exception as exc:
         # Possibly a failed connection, so reset it
         logger.exception('Exception during scrape, resetting scraper')
         scraper.destroy()
-        raise web.HTTPInternalServerError(text='Scrape failed: ' + str(exc)) from None
+        return web.Response(text='Scrape failed: ' + str(exc), status=500)
     else:
         content = prometheus_client.generate_latest(counters).decode()
         return web.Response(text=content)
