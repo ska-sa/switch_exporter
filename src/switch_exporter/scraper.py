@@ -20,6 +20,18 @@ class ScrapeError(Exception):
     pass
 
 
+async def timed(
+    coroutine: Coroutine,
+    timing_gauge: prometheus_client.Gauge,
+) -> None:
+    """Run the coroutine and set the duration it ran on the timing gauge."""
+    start_time = time.perf_counter()
+    await coroutine
+    end_time = time.perf_counter()
+    duration = end_time - start_time
+    timing_gauge.set(duration)
+
+
 class Scraper(Item):
     def __init__(
         self,
@@ -34,22 +46,16 @@ class Scraper(Item):
         self._lock = asyncio.Lock()
         self._error = None
         self.registry = prometheus_client.CollectorRegistry()
+        self.timing_gauge = None
         self.results_shown = True
         self.scraper_task = None
         self.timeout_counter = 0
 
-    async def timed(
-        self,
-        coroutine: Coroutine,
-        timing_gauge: prometheus_client.Gauge,
-        hostname: str,
-    ) -> None:
-        start_time = time.perf_counter()
-        await coroutine
-        end_time = time.perf_counter()
-        duration = end_time - start_time
-        if self.enable_timing_metrics:
-            timing_gauge.labels(hostname, coroutine.__name__).set(duration)
+    def maybe_timed(self, collector: Coroutine, hostname: str) -> Coroutine:
+        """Wrap the collector so its duration is recorded, when timing is enabled."""
+        if self.timing_gauge is not None:
+            return timed(collector, self.timing_gauge.labels(hostname, collector.__name__))
+        return collector
 
     async def start_collectors(self, collectors_fns: List[Callable]) -> None:
         """Start a task per collector function to update the registry.
@@ -60,16 +66,19 @@ class Scraper(Item):
         Must not raise: this runs as a background task, the errors should be raised when
         awaiting on task completion, possible from multiple client sessions, instead.
         """
-        timing_gauge = prometheus_client.Gauge(
-            'switch_coroutine_duration_seconds', 'duration of the coroutine',
-            labelnames=('hostname', 'coroutine'),
-            registry=self.registry,
-        )
+        self.timing_gauge = None
+        if self.enable_timing_metrics:
+            self.timing_gauge = prometheus_client.Gauge(
+                'switch_coroutine_duration_seconds', 'duration of the coroutine',
+                labelnames=('hostname', 'coroutine'),
+                registry=self.registry,
+            )
+
         collectors = [fn(self.registry) for fn in collectors_fns]
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
         tasks = [
             asyncio.create_task(
-                self.timed(c, timing_gauge, self.switch.hostname),
+                self.maybe_timed(c, self.switch.hostname),
                 name=f"{c.__name__}({self._cache_key})"
             ) for c in collectors
         ]
@@ -157,7 +166,7 @@ class Scraper(Item):
             for collector in collectors:
                 try:
                     scraper_fns.append(self.switch.collectors[collector])
-                except KeyError as e:
+                except KeyError:
                     raise ValidationError(f'Unknown collector: {collector}')
 
         async with self._lock:
