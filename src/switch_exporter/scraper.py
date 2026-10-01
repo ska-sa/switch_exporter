@@ -52,10 +52,10 @@ class Scraper(Item):
             timing_gauge.labels(hostname, coroutine.__name__).set(duration)
 
     async def start_collectors(self, collectors_fns: List[Callable]) -> None:
-        """Start a task that runs the collector functions which updates the registry.
+        """Start a task per collector function to update the registry.
 
-        A timing gauge for the duration of the collectors is created.
-        Once done, the `self.scraper_task` attribute is set to None.
+        A timing gauge for the duration of the collectors is created. Once done,
+        the `self.scraper_task` attribute is set to None.
 
         Must not raise: this runs as a background task, the errors should be raised when
         awaiting on task completion, possible from multiple client sessions, instead.
@@ -124,10 +124,10 @@ class Scraper(Item):
             # This prevents the scraper from getting stuck in a loop of timeouts if they are related
             # to the switch connection.
             self.timeout_counter += 1
-            if self.timeout_counter > 10:
+            if self.timeout_counter >= 10:
                 raise RuntimeError(
                     f'Timed out waiting for {self._cache_key} metrics '
-                    f'{self.timeout_counter} times'
+                    f'{self.timeout_counter} times in a row'
                 ) from None
             raise asyncio.TimeoutError(f'Timed out waiting for {self._cache_key} metrics') from None
         except asyncio.CancelledError:
@@ -158,13 +158,13 @@ class Scraper(Item):
                 try:
                     scraper_fns.append(self.switch.collectors[collector])
                 except KeyError as e:
-                    raise ValidationError(f'Unknown collector: {collector}') from e
+                    raise ValidationError(f'Unknown collector: {collector}')
 
         async with self._lock:
             scrape_timeout = timeout - (time.perf_counter() - start_time)
             if self.results_shown is True and self.scraper_task is None:
-                # We have already returned the results, so we need to start a new task to scrape the
-                # metrics.
+                # We have already returned the results, so we need to start a
+                # new task to scrape the metrics.
                 self.registry = prometheus_client.CollectorRegistry()
                 self.scraper_task = asyncio.create_task(
                     self.start_collectors(scraper_fns),
