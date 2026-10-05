@@ -51,7 +51,7 @@ class Scraper(Item):
         self.scraper_task = None
         self.timeout_counter = 0
 
-    def maybe_timed(self, collector: Coroutine, hostname: str) -> Coroutine:
+    def wrap_collector_with_timer(self, collector: Coroutine, hostname: str) -> Coroutine:
         """Wrap the collector so its duration is recorded, when timing is enabled."""
         if self.timing_gauge is not None:
             return timed(collector, self.timing_gauge.labels(hostname, collector.__name__))
@@ -78,7 +78,7 @@ class Scraper(Item):
         # TODO: Use a TaskGroup instead of a list of tasks to robustly handle the async context.
         tasks = [
             asyncio.create_task(
-                self.maybe_timed(c, self.switch.hostname),
+                self.wrap_collector_with_timer(c, self.switch.hostname),
                 name=f"{c.__name__}({self._cache_key})"
             ) for c in collectors
         ]
