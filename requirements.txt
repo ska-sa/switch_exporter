@@ -10,6 +10,5 @@ cryptography==46.0.7      # via asyncssh
 prometheus-client==0.21.1
 pycparser==2.22           # via cffi
 typing-extensions==4.13.2 # via cryptography - to override base-requirements.txt above
-netifaces-plus==0.12.5
 
-katsdpservices @ git+https://github.com/ska-sa/katsdpservices
+katsdpservices==1.4
