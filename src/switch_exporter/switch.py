@@ -23,7 +23,7 @@ _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
 _OPERATIONAL_CHANGES_RE = \
     re.compile(r'(.*) \((\d+) oper change\)')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
-_DIAGNOSTIC_PORT_CODE_RE = re.compile(r'(?m)^\s*Eth([^ \t:]+).*?\s+(\d+).*$')
+_DIAGNOSTIC_PORT_CODE_RE = re.compile(r'(?m)^\s*Eth([^ \t:]+).*?\s+(\d+)\s+(.*)$')
 _TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(
@@ -77,90 +77,6 @@ def split_aggregate(
             f'found {len(data)} total entries, expected {expected_pairs} pairs and one header line')
     for i in range(1, len(data) - 1, 2):
         yield data[i], data[i + 1]
-
-
-def diagnostic_code_descriptions(diagnostic_code: str) -> str:
-    """Get the description of a diagnostic code"""
-    return {
-        "0": "OK",
-        "1": "Port closed by command",
-        "2": "AN no partner",
-        "3": "AN ack not received",
-        "4": "AN next-page exchange failed",
-        "5": "KR frame lock not acquired",
-        "6": "KR link inhibit timeout",
-        "7": "KR partner not receiver ready",
-        "8": "KR tuning incomplete",
-        "9": "PCS block lock not acquired",
-        "10": "PCS AM lock not acquired",
-        "11": "PCS align_status not acquired",
-        "12": "FC FEC not locked",
-        "13": "RS FEC not locked",
-        "14": "Remote fault received",
-        "15": "Bad SI",
-        "16": "Cable compliance code mismatch",
-        "17": "Bad SI (high BER)",
-        "18": "Port disabled by Ekey",
-        "19": "Phase EO failure",
-        "20": "Non-NVIDIA cable/module stamping",
-        "21": "Down by PortInfo MAD",
-        "22": "Disabled by verification",
-        "23": "Calibration failure",
-        "24": "Stamping: EDR not allowed",
-        "25": "Stamping: FDR10 not allowed",
-        "26": "Stamping: Eth compliance code zero",
-        "27": "Stamping: 56GE",
-        "28": "Stamping: non-NVIDIA QSFP28",
-        "29": "Stamping: non-NVIDIA SFP28",
-        "30": "No backplane speed on BP channel",
-        "31": "No passive proto on copper",
-        "32": "No active proto on active channel",
-        "33": "Port width/speed mismatch",
-        "34": "Local speed degradation",
-        "35": "Remote speed degradation",
-        "36": "No partner in force mode",
-        "37": "Partial link in force mode",
-        "38": "AN FEC mismatch (override)",
-        "39": "AN no HCD",
-        "40": "VPI protocol mismatch",
-        "41": "Module rate not supported",
-        "42": "Bad SI, cable non-optimal rate",
-        "43": "No partner in force mode (fast link up)",
-        "48": "Bad SI",
-        "49": "Bad SI",
-        "50": "Internal error",
-        "51": "HST speed mismatch",
-        "52": "Bad SI (link)",
-        "53": "MCB link-up failure",
-        "54": "PLR no Rx good non-sync cell",
-        "55": "PSI fatal error",
-        "56": "Module lane freq not synced",
-        "57": "Signal not detected",
-        "59": "Module conf not done",
-        "128": "Troubleshooting in process",
-        "1023": "Info not available",
-        "1024": "Cable unplugged/powered off",
-        "1025": "Long range, non-MLNX cable",
-        "1026": "Bus stuck (I2C shorted)",
-        "1027": "Bad/unsupported EEPROM",
-        "1028": "Part number list",
-        "1029": "Unsupported cable",
-        "1030": "Module temperature shutdown",
-        "1031": "Shorted cable",
-        "1032": "Power budget exceeded",
-        "1033": "Management forced port down",
-        "1034": "Module disabled by command",
-        "1036": "Module PMD type not enabled",
-        "1040": "PCIe power slot exceeded",
-        "1042": "Module state machine fault",
-        "1043": "Modules stamping speed degeneration",
-        "1044": "Modules stamping speed degeneration",
-        "1045": "Modules stamping speed degeneration",
-        "1046": "Modules stamping speed degeneration",
-        "1047": "Modules DataPath FSM fault",
-        "1048": "Modules DataPath FSM fault",
-        "2048": "MPR violation"
-    }.get(diagnostic_code, "Unknown")
 
 
 class Switch:
@@ -360,7 +276,13 @@ class Switch:
         self,
         registry: prometheus_client.CollectorRegistry
     ) -> None:
-        _state_labelnames = ('port', 'remote_name', 'remote_port_id', 'remote_port_description', 'diagnostic_code_description')
+        _state_labelnames = (
+            'port',
+            'remote_name',
+            'remote_port_id',
+            'remote_port_description',
+            'diagnostic_code_description'
+        )
         port_link_diagnostic_code = prometheus_client.Gauge(
             'switch_port_link_diagnostic_code', 'state of the link',
             labelnames=_state_labelnames,
@@ -374,8 +296,10 @@ class Switch:
             if port not in self.ports:
                 continue
             info = self.lldp_info.get(port, LLDPRemoteInfo())
-            labels = (port, info.name, info.port_id, info.port_description, diagnostic_code_descriptions(match.group(2)))
-            port_link_diagnostic_code.labels(*labels).set(int(match.group(2)))
+            diagnostic_code = match.group(2)
+            description = match.group(3) if diagnostic_code != "0" else "OK"
+            labels = (port, info.name, info.port_id, info.port_description, description)
+            port_link_diagnostic_code.labels(*labels).set(int(diagnostic_code))
         # No assertions here because some switches don't support link diagnostics
 
     async def _scrape_transceiver_power(
