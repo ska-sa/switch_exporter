@@ -23,7 +23,7 @@ _REMOTE_NAME_RE = re.compile(r'^Remote system name *: (?!Not Advertised)(.*)$')
 _OPERATIONAL_CHANGES_RE = \
     re.compile(r'(.*) \((\d+) oper change\)')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
-_DIAGNOSTIC_PORT_CODE_RE = re.compile(r'(?m)^\s*Eth([^ \t:]+).*?\s+(\d+)\s+(.*)$')
+_DIAGNOSTIC_PORT_CODE_RE = re.compile(r'(?m)^\s*Eth([^ \t:]+).*?\s+(\d+)\s+(.*?)\.?$')
 _TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(
@@ -296,10 +296,10 @@ class Switch:
             if port not in self.ports:
                 continue
             info = self.lldp_info.get(port, LLDPRemoteInfo())
-            diagnostic_code = match.group(2)
-            description = match.group(3) if diagnostic_code != "0" else "OK"
+            diagnostic_code = int(match.group(2))
+            description = match.group(3) if diagnostic_code else "OK"
             labels = (port, info.name, info.port_id, info.port_description, description)
-            port_link_diagnostic_code.labels(*labels).set(int(diagnostic_code))
+            port_link_diagnostic_code.labels(*labels).set(diagnostic_code)
         # No assertions here because some switches don't support link diagnostics
 
     async def _scrape_transceiver_power(
