@@ -1,6 +1,6 @@
-ARG KATSDPDOCKERBASE_REGISTRY=quay.io/ska-sa
+ARG KATSDPDOCKERBASE_REGISTRY=harbor.sdp.kat.ac.za/dpp
 
-FROM $KATSDPDOCKERBASE_REGISTRY/docker-base-build AS build
+FROM $KATSDPDOCKERBASE_REGISTRY/docker-base-build:fix-netifaces-plus AS build
 
 # Enable Python 3 venv
 ENV PATH="$PATH_PYTHON3" VIRTUAL_ENV="$VIRTUAL_ENV_PYTHON3"
@@ -17,7 +17,7 @@ RUN cd /tmp/install/switch_exporter && \
 
 #######################################################################
 
-FROM $KATSDPDOCKERBASE_REGISTRY/docker-base-runtime
+FROM $KATSDPDOCKERBASE_REGISTRY/docker-base-runtime:fix-netifaces-plus
 LABEL maintainer=sdpdev+switch_exporter@sarao.ac.za
 
 COPY --chown=kat:kat --from=build /home/kat/ve3 /home/kat/ve3
