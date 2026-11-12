@@ -24,6 +24,7 @@ _OPERATIONAL_CHANGES_RE = \
     re.compile(r'(.*) \((\d+) oper change\)')
 _DIAGNOSTIC_CODE_RE = re.compile(r'^Eth\d+\/\d+\s+(\d+)')
 _DIAGNOSTIC_PORT_CODE_RE = re.compile(r'(?m)^\s*Eth([^ \t:]+).*?\s+(\d+)\s+(.*?)\.?$')
+_OTHER_DESCRIPTION_RE = re.compile(r'^Other(?: issues)?$')
 _TRANSCEIVER_POWER_TX_RE = re.compile(r'(\w+) Tx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_RX_RE = re.compile(r'(\w+) Rx Power\s*: .* mW / (-?\d+\.\d+) dBm')
 _TRANSCEIVER_POWER_HI_RX_THRESHOLD_RE = re.compile(
@@ -39,6 +40,14 @@ _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
     r'\s*Low Tx Power Alarm Thresh\s*: .* mW / (-?\d+\.\d+) dBm'
 )
 _TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (\d+(?:\/\d+)+) transceiver diagnostic data:')
+
+# Some diagnostic codes's meaning is clear from documentation, but the switch doesn't provide a description.
+# See https://web.archive.org/web/20260328224825/https://docs.nvidia.com/networking/display/nvidia-mlnx-os-user-manual-v3-12-3000.3000.pdf
+OTHER_DIAGNOSTIC_CODES = {
+    36: "No partner in force mode",
+    37: "Partial link in force mode",
+    43: "No partner in force mode (fast link up)"
+}
 
 
 @attr.s(slots=True)
@@ -298,6 +307,9 @@ class Switch:
             info = self.lldp_info.get(port, LLDPRemoteInfo())
             diagnostic_code = int(match.group(2))
             description = match.group(3) if diagnostic_code else "OK"
+            if _OTHER_DESCRIPTION_RE.match(description):
+                description = OTHER_DIAGNOSTIC_CODES.get(diagnostic_code, description)
+
             labels = (port, info.name, info.port_id, info.port_description, description)
             port_link_diagnostic_code.labels(*labels).set(diagnostic_code)
         # No assertions here because some switches don't support link diagnostics
