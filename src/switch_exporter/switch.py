@@ -41,8 +41,9 @@ _TRANSCEIVER_POWER_LOW_TX_THRESHOLD_RE = re.compile(
 )
 _TRANSCEIVER_POWER_SECTION_RE = re.compile(r'Port (\d+(?:\/\d+)+) transceiver diagnostic data:')
 
-# Some diagnostic codes' meaning is clear from documentation, but the switch doesn't provide a description.
-# See https://web.archive.org/web/20260328224825/https://docs.nvidia.com/networking/display/nvidia-mlnx-os-user-manual-v3-12-3000.3000.pdf
+# Some diagnostic codes' meaning is clear from documentation, but the switch doesn't provide a
+# description. See
+# https://docs.nvidia.com/networking/display/nvidia-mlnx-os-user-manual-v3-12-3000.3000.pdf
 OTHER_DIAGNOSTIC_CODES = {
     36: "No partner in force mode",
     37: "Partial link in force mode",
