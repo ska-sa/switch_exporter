@@ -1,5 +1,6 @@
 -c https://raw.githubusercontent.com/ska-sa/katsdpdockerbase/master/docker-base-build/base-requirements.txt
 
+#removed the pins, to be handled by uv
 aiomonitor
 aiohttp
 async-timeout
