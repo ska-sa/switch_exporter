@@ -1,13 +1,14 @@
--d https://raw.githubusercontent.com/ska-sa/katsdpdockerbase/master/docker-base-build/base-requirements.txt
+-c https://raw.githubusercontent.com/ska-sa/katsdpdockerbase/master/docker-base-build/base-requirements.txt
 
-aiomonitor==0.7.0
+#removed the pins, to be handled by uv
+aiomonitor
 aiohttp
 async-timeout
-asyncssh==2.17.0
+asyncssh
 attrs
-cffi==1.17.1              # via cryptography
-cryptography==46.0.7      # via asyncssh
-katsdpservices==1.4
-prometheus-client==0.21.1
-pycparser==2.22           # via cffi
-typing-extensions==4.13.2 # via cryptography - to override base-requirements.txt above
+cffi          # via cryptography
+cryptography      # via asyncssh
+katsdpservices
+prometheus-client
+pycparser          # via cffi
+typing-extensions # via cryptography - to override base-requirements.txt above
