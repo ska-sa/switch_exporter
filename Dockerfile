@@ -29,7 +29,7 @@ FROM $KATSDPDOCKERBASE_REGISTRY/docker-base-runtime
 LABEL maintainer=sdpdev+switch_exporter@sarao.ac.za
 
 COPY --chown=kat:kat --from=build /home/kat/ve3 /home/kat/ve3
-ENV PATH="$PATH_PYTHON3" VIRTUAL_ENV="$VIRTUAL_ENV_PYTHON3"
+ENV PATH="/home/kat/.local/bin:$PATH_PYTHON3" VIRTUAL_ENV="$VIRTUAL_ENV_PYTHON3"
 
 EXPOSE 9116
 ENTRYPOINT ["/sbin/tini", "--", "switch-exporter"]
